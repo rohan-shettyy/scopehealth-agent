@@ -144,6 +144,13 @@ export default function Home() {
       message.role === "system" &&
       message.content.includes("SMS fallback activated")
   );
+  const primaryMode = session?.state.channel === "sms" || fallbackTriggered
+    ? "sms"
+    : "call";
+  const callCaptionMessages = useMemo(
+    () => getCallCaptionMessages(messages),
+    [messages]
+  );
 
   const workflowSummary = useMemo(() => {
     if (!session) {
@@ -704,110 +711,177 @@ export default function Home() {
         </div>
       </header>
 
-      <section className="workspace-grid">
-        <section className="call-panel" aria-label="Live call transcript">
-          <div className="panel-header">
-            <div>
-              <p className="panel-kicker">Call mode</p>
-              <h2>Live transcript</h2>
-            </div>
-            <div className="panel-actions">
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => setIsMuted((value) => !value)}
-                disabled={!session || session.state.status !== "active"}
-              >
-                {isMuted ? "Unmute" : "Mute"}
-              </button>
-              <button
-                className="primary-button"
-                type="button"
-                onClick={startCall}
-                disabled={isBusy || callStatus === "connected"}
-              >
-                {callStatus === "idle" ? "Start call" : "Restart call"}
-              </button>
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={hangUp}
-                disabled={!session || session.state.channel !== "call"}
-              >
-                Hang up
-              </button>
-            </div>
-          </div>
-
-          <div className="state-strip" aria-label="Workflow status">
-            <StatusBadge label={audioNotice} tone={isMuted ? "warning" : "neutral"} />
-            <StatusBadge label={`mic ${formatMicStatus(micStatus)}`} tone={micStatusTone(micStatus)} />
-            <StatusBadge
-              label={session?.state.identityVerified ? "verified" : "not verified"}
-              tone={session?.state.identityVerified ? "good" : "warning"}
-            />
-            <StatusBadge
-              label={session?.state.insuranceVerified ? "insurance verified" : "insurance pending"}
-              tone={session?.state.insuranceVerified ? "good" : "neutral"}
-            />
-            <StatusBadge
-              label={refillRequest ? `refill ${refillRequest.status.toLowerCase()}` : "no refill yet"}
-              tone={refillRequest ? "good" : "neutral"}
-            />
-          </div>
-
-          <div className="transcript-window">
-            {messages.length === 0 ? (
-              <div className="empty-transcript">
-                <p>Start a call to create a backend session and open the voice provider.</p>
+      <section className={`workspace-grid mode-${primaryMode}`}>
+        <section
+          className={`device-surface device-${primaryMode}`}
+          aria-label={primaryMode === "sms" ? "SMS messaging experience" : "Voice call experience"}
+        >
+          {primaryMode === "call" ? (
+            <div className="call-screen">
+              <div className="phone-status-row">
+                <span>Voice call</span>
+                <span>{session ? `Session #${session.id}` : "Ready"}</span>
               </div>
-            ) : (
-              messages.map((message) => (
-                <article
-                  className={`message-row message-${message.role}`}
-                  key={message.id}
+
+              <div className="call-target">
+                <div className="contact-avatar" aria-hidden="true">SC</div>
+                <div>
+                  <p className="panel-kicker">Calling</p>
+                  <h2>Sarah Chen</h2>
+                  <p className="target-subtitle">(555) 867-5309</p>
+                </div>
+              </div>
+
+              <div className="call-state-card" aria-live="polite">
+                <p className="call-state-label">{formatCallStatus(callStatus)}</p>
+                <p className="call-state-copy">{getCallStateCopy(callStatus, audioNotice)}</p>
+                <div className={`voice-orb voice-orb-${callStatus}`} aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              </div>
+
+              <div className="call-control-row">
+                <button
+                  className="call-control"
+                  type="button"
+                  onClick={() => setIsMuted((value) => !value)}
+                  disabled={!session || session.state.status !== "active"}
                 >
-                  <div className="message-meta">
-                    <span>{formatRole(message.role)}</span>
-                    <time dateTime={message.createdAt}>
-                      {new Date(message.createdAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit"
-                      })}
-                    </time>
-                  </div>
-                  <p>{message.content}</p>
-                </article>
-              ))
-            )}
-            {isBusy ? (
-              <div className="typing-indicator" aria-live="polite">
-                <span />
-                <span />
-                <span />
+                  {isMuted ? "Unmute" : "Mute"}
+                </button>
+                <button
+                  className="call-control call-control-primary"
+                  type="button"
+                  onClick={startCall}
+                  disabled={isBusy || callStatus === "connected"}
+                >
+                  {callStatus === "idle" ? "Start call" : "Reconnect"}
+                </button>
+                <button
+                  className="call-control call-control-end"
+                  type="button"
+                  onClick={hangUp}
+                  disabled={!session || session.state.channel !== "call"}
+                >
+                  Hang up
+                </button>
               </div>
-            ) : null}
-            <div ref={transcriptEndRef} />
-          </div>
 
-          <form className="turn-form" onSubmit={submitTurn}>
-            <input
-              aria-label="Patient call input"
-              placeholder={
-                canSend
-                  ? "Type the patient's spoken response..."
-                  : "Start a call to enable patient input"
-              }
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              disabled={!canSend}
-            />
-            <button type="submit" disabled={!canSend || !input.trim()}>
-              Send
-            </button>
-          </form>
+              <div className="call-pill-row">
+                <StatusBadge label={`mic ${formatMicStatus(micStatus)}`} tone={micStatusTone(micStatus)} />
+                <StatusBadge label={`voice ${formatVoiceStatus(voiceStatus)}`} tone={voiceStatusTone(voiceStatus)} />
+                <StatusBadge
+                  label={session?.state.identityVerified ? "verified" : "identity pending"}
+                  tone={session?.state.identityVerified ? "good" : "warning"}
+                />
+              </div>
 
-          {error ? <p className="error-banner">{error}</p> : null}
+              <div className="sms-standby">
+                <span>SMS fallback</span>
+                <p>Text continuation stays dormant until the call disconnects before refill completion.</p>
+              </div>
+
+              <details className="call-captions" open={voiceStatus !== "live"}>
+                <summary>Call captions and notes</summary>
+                <div className="caption-list">
+                  {callCaptionMessages.length === 0 ? (
+                    <p className="caption-empty">
+                      Agent and patient captions appear here during the demo.
+                    </p>
+                  ) : (
+                    callCaptionMessages.map((message) => (
+                      <article className="caption-row" key={message.id}>
+                        <span>{formatRole(message.role)}</span>
+                        <p>{message.content}</p>
+                      </article>
+                    ))
+                  )}
+                  <div ref={transcriptEndRef} />
+                </div>
+              </details>
+
+              <form className="turn-form demo-aid-form" onSubmit={submitTurn}>
+                <label htmlFor="call-text-fallback">Demo text fallback</label>
+                <div>
+                  <input
+                    id="call-text-fallback"
+                    aria-label="Patient call input"
+                    placeholder={
+                      canSend
+                        ? "Use only if mic or voice fallback is needed..."
+                        : "Start a call to enable fallback input"
+                    }
+                    value={input}
+                    onChange={(event) => setInput(event.target.value)}
+                    disabled={!canSend}
+                  />
+                  <button type="submit" disabled={!canSend || !input.trim()}>
+                    Send
+                  </button>
+                </div>
+              </form>
+
+              {error ? <p className="error-banner">{error}</p> : null}
+            </div>
+          ) : (
+            <div className="sms-screen">
+              <div className="mode-transition-banner">
+                <span>Call ended</span>
+                <strong>Continuing by text</strong>
+                <p>We switched this refill to SMS and kept the information already collected.</p>
+              </div>
+
+              <div className="sms-header">
+                <div>
+                  <p className="panel-kicker">Messages</p>
+                  <h2>Sarah Chen</h2>
+                  <p className="target-subtitle">Prescription refill SMS</p>
+                </div>
+                <StatusBadge
+                  label={session?.state.status === "completed" ? "refill completed" : "sms active"}
+                  tone={session?.state.status === "completed" ? "good" : "connected"}
+                />
+              </div>
+
+              <div className="sms-thread primary-sms-thread" aria-label="SMS continuation thread">
+                {smsMessages.length > 0 ? (
+                  smsMessages.map((message) => (
+                    <article
+                      className={`sms-bubble sms-${message.role}`}
+                      key={message.id}
+                    >
+                      <span>{formatRole(message.role)}</span>
+                      <p>{message.content}</p>
+                    </article>
+                  ))
+                ) : (
+                  <p className="sms-empty">
+                    The first SMS continuation will appear after call fallback.
+                  </p>
+                )}
+                <div ref={transcriptEndRef} />
+              </div>
+
+              <form className="sms-form primary-sms-form" onSubmit={submitSms}>
+                <input
+                  aria-label="Patient SMS reply"
+                  placeholder={
+                    canSendSms ? "Reply by SMS..." : "SMS conversation complete"
+                  }
+                  value={smsInput}
+                  onChange={(event) => setSmsInput(event.target.value)}
+                  disabled={!canSendSms}
+                />
+                <button type="submit" disabled={!canSendSms || !smsInput.trim()}>
+                  Send
+                </button>
+              </form>
+
+              {error ? <p className="error-banner sms-error">{error}</p> : null}
+            </div>
+          )}
         </section>
 
         <aside className="debug-panel" aria-label="Session state">
@@ -934,51 +1008,14 @@ export default function Home() {
             )}
           </section>
 
-          <div className="sms-panel">
-            <div>
-              <p className="panel-kicker">SMS mode</p>
-              <h2>
-                {session?.state.channel === "sms"
-                  ? "Fallback ready"
-                  : "Fallback inactive"}
-              </h2>
-            </div>
-            <p>
-              {session?.state.channel === "sms"
-                ? "The call has moved to SMS continuation. Continue the same refill without repeating completed steps."
-                : "SMS remains text/template-first. This panel stays inactive until fallback is triggered."}
-            </p>
-            <div className="sms-thread" aria-label="SMS continuation thread">
-              {smsMessages.length > 0 ? (
-                smsMessages.map((message) => (
-                  <article
-                    className={`sms-bubble sms-${message.role}`}
-                    key={message.id}
-                  >
-                    <span>{formatRole(message.role)}</span>
-                    <p>{message.content}</p>
-                  </article>
-                ))
-              ) : (
-                <p className="sms-empty">
-                  Hang up before completion to generate the first SMS continuation.
-                </p>
-              )}
-            </div>
-            <form className="sms-form" onSubmit={submitSms}>
-              <input
-                aria-label="Patient SMS reply"
-                placeholder={
-                  canSendSms ? "Reply by SMS..." : "SMS activates after hang-up"
-                }
-                value={smsInput}
-                onChange={(event) => setSmsInput(event.target.value)}
-                disabled={!canSendSms}
-              />
-              <button type="submit" disabled={!canSendSms || !smsInput.trim()}>
-                Send
-              </button>
-            </form>
+          <div className="channel-route-card">
+            <p className="panel-kicker">Channel route</p>
+            <strong>{primaryMode === "sms" ? "SMS is primary" : "Voice call is primary"}</strong>
+            <span>
+              {primaryMode === "sms"
+                ? "The call surface is retired for this session."
+                : "SMS remains locked until call fallback is triggered."}
+            </span>
           </div>
         </aside>
       </section>
@@ -1054,6 +1091,40 @@ function formatCallStatus(status: CallStatus) {
     case "ended":
       return "ended";
   }
+}
+
+function getCallStateCopy(status: CallStatus, audioNotice: string) {
+  switch (status) {
+    case "idle":
+      return "Ready to start a simulated refill call.";
+    case "connecting":
+      return "Connecting the refill assistant and requesting microphone access.";
+    case "connected":
+      return "Call connected. Voice is available when the microphone is ready.";
+    case "listening":
+      return audioNotice;
+    case "processing":
+      return "Processing the patient's last spoken response.";
+    case "speaking":
+      return "The agent is speaking. Patient speech will interrupt playback.";
+    case "thinking":
+      return "Ending or updating the call state.";
+    case "ended":
+      return "The call has ended.";
+  }
+}
+
+function getCallCaptionMessages(messages: TranscriptMessage[]) {
+  const fallbackIndex = messages.findIndex(
+    (message) =>
+      message.role === "system" &&
+      message.content.includes("SMS fallback activated")
+  );
+  const callMessages = fallbackIndex >= 0 ? messages.slice(0, fallbackIndex) : messages;
+
+  return callMessages.filter(
+    (message) => message.role !== "tool"
+  );
 }
 
 function getVoiceStatusFromTranscript(
