@@ -33,9 +33,10 @@ export interface MedicationChoice {
 }
 
 export interface PharmacyChoice {
-  pharmacyId: number;
+  pharmacyId?: number;
   name: string;
-  addressLine1: string;
+  addressLine1?: string;
+  isAlternate?: boolean;
 }
 
 export interface RefillCompletionPayload {
