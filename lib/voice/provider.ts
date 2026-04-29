@@ -4,7 +4,7 @@ import { LocalVoiceProvider } from "@/lib/voice/local-voice-provider";
 import type { VoiceProvider } from "@/lib/voice/types";
 
 const localProvider = new LocalVoiceProvider();
-let geminiProvider: GeminiLiveClient | undefined;
+const globalAny = globalThis as any;
 
 export function getCallVoiceProvider(): VoiceProvider {
   const config = getGeminiLiveConfig();
@@ -17,7 +17,7 @@ export function getCallVoiceProvider(): VoiceProvider {
     return localProvider;
   }
 
-  geminiProvider ??= new GeminiLiveClient(config);
+  globalAny.geminiProvider ??= new GeminiLiveClient(config);
 
-  return geminiProvider;
+  return globalAny.geminiProvider;
 }

@@ -5,6 +5,7 @@ import {
   advanceRefillWorkflow,
   type RefillWorkflowContext
 } from "./refill-engine";
+import { normalizeReadableTranscript } from "./spoken-date";
 import { createInitialSessionState, type RefillSessionState } from "./workflow";
 
 const context: RefillWorkflowContext = {
@@ -66,6 +67,25 @@ test("verifies DOB and advances to medication selection", () => {
   assert.equal(result.updatedSession.nextExpectedStep, "select_medication");
   assert.equal(result.isComplete, false);
   assert.equal(result.shouldCreateRefillRequest, false);
+});
+
+test("normalizes spoken dates for readable transcripts and DOB verification", () => {
+  assert.equal(
+    normalizeReadableTranscript("March eighth, two thousand three"),
+    "March 8, 2003"
+  );
+
+  const result = advanceRefillWorkflow(
+    createInitialSessionState("call"),
+    {
+      text: "March fifteenth, nineteen eighty five",
+      receivedAt: "2026-04-29T12:00:00.000Z"
+    },
+    context
+  );
+
+  assert.equal(result.updatedSession.identityVerified, true);
+  assert.equal(result.updatedSession.nextExpectedStep, "select_medication");
 });
 
 test("selects a medication from active prescriptions", () => {

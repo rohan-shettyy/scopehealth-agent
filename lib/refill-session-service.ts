@@ -1,4 +1,5 @@
 import { advanceRefillWorkflow } from "@/domain/refill-engine";
+import { normalizeReadableTranscript } from "@/domain/spoken-date";
 import type { RefillSessionState, WorkflowStep } from "@/domain/workflow";
 import {
   appendConversationMessage,
@@ -24,7 +25,11 @@ export interface WorkflowInteractionResult {
   voiceEvents?: VoiceLiveEvent[];
 }
 
-export async function startSimulatedCall(): Promise<SessionTranscript> {
+export interface StartCallResult extends SessionTranscript {
+  voiceEvents?: VoiceLiveEvent[];
+}
+
+export async function startSimulatedCall(): Promise<StartCallResult> {
   const context = await loadDemoPatientWorkflowContext();
   const session = await createConversationSession({
     patientId: context.patient.id,
@@ -33,14 +38,24 @@ export async function startSimulatedCall(): Promise<SessionTranscript> {
   const agentReply =
     "Hi, this is the prescription refill assistant. Please provide Sarah Chen's date of birth to get started.";
 
+  await createCallVoiceSession(session.id);
+  const voiceResult = await phraseCallReply(
+    session.id,
+    "The call just connected.",
+    agentReply
+  );
+
   await appendConversationMessage({
     sessionId: session.id,
     role: "assistant",
-    content: agentReply
+    content: voiceResult.replyText
   });
-  await createCallVoiceSession(session.id);
+  await persistVoiceEvents(session.id, voiceResult.events);
 
-  return fetchSessionTranscript(session.id);
+  return {
+    ...(await fetchSessionTranscript(session.id)),
+    voiceEvents: voiceResult.events
+  };
 }
 
 export async function submitCallInput(
@@ -64,7 +79,21 @@ export async function streamCallAudioChunk(input: {
     throw new Error("Call session is not active");
   }
 
-  await getCallVoiceProvider().sendAudioChunk(input);
+  try {
+    await getCallVoiceProvider().sendAudioChunk(input);
+  } catch (error) {
+    return {
+      voiceEvents: [
+        {
+          sessionId: input.sessionId,
+          provider: "gemini-live",
+          type: "error",
+          text: formatError(error),
+          createdAt: new Date().toISOString()
+        }
+      ]
+    };
+  }
 
   return {
     voiceEvents: await getCallVoiceProvider().getEvents(input.sessionId)
@@ -75,7 +104,9 @@ export async function finishCallAudioTurn(
   sessionId: number
 ): Promise<WorkflowInteractionResult> {
   const audioResult = await getCallVoiceProvider().endAudioTurn(sessionId);
-  const transcriptText = audioResult.transcriptText?.trim();
+  const transcriptText = normalizeReadableTranscript(
+    audioResult.transcriptText?.trim() ?? ""
+  ).trim();
 
   if (!transcriptText) {
     await persistVoiceEvents(sessionId, audioResult.events);
@@ -86,7 +117,10 @@ export async function finishCallAudioTurn(
 
   return {
     ...workflowResult,
-    voiceEvents: [...audioResult.events, ...(workflowResult.voiceEvents ?? [])]
+    voiceEvents: [
+      ...getPatientAudioTranscriptEvents(audioResult.events),
+      ...(workflowResult.voiceEvents ?? [])
+    ]
   };
 }
 
@@ -312,6 +346,7 @@ async function createCallVoiceSession(sessionId: number) {
       systemInstruction: [
         "You are a concise voice assistant for a prescription refill demo.",
         "The deterministic workflow engine controls all refill state.",
+        "When you receive realtime microphone audio, only transcribe it. Do not answer the patient until the server sends a structured text turn with the required reply.",
         "Only rephrase supplied agent replies for natural phone conversation.",
         "Do not invent medical, insurance, pharmacy, or workflow decisions."
       ].join(" ")
@@ -409,6 +444,19 @@ function formatVoiceEventError(event: VoiceLiveEvent): string {
   }
 
   return "Unknown voice provider error";
+}
+
+function getPatientAudioTranscriptEvents(events: VoiceLiveEvent[]) {
+  return events
+    .filter((event) => event.type === "user_transcript" || event.type === "error")
+    .map((event) =>
+      event.type === "user_transcript" && event.text
+        ? {
+            ...event,
+            text: normalizeReadableTranscript(event.text)
+          }
+        : event
+    );
 }
 
 function formatError(error: unknown): string {

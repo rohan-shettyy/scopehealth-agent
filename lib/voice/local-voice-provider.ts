@@ -9,8 +9,12 @@ import type {
   VoiceTurnResult
 } from "@/lib/voice/types";
 
-const sessions = new Set<number>();
-const eventsBySession = new Map<number, VoiceLiveEvent[]>();
+const globalAny = globalThis as any;
+const sessions = globalAny.localVoiceSessions || new Set<number>();
+globalAny.localVoiceSessions = sessions;
+
+const eventsBySession = globalAny.localVoiceEvents || new Map<number, VoiceLiveEvent[]>();
+globalAny.localVoiceEvents = eventsBySession;
 
 export class LocalVoiceProvider implements VoiceProvider {
   async createSession(input: VoiceSessionStartInput): Promise<VoiceSession> {

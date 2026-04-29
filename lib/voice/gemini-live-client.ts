@@ -1,4 +1,5 @@
 import { getGeminiLiveConfig, type GeminiLiveConfig } from "@/lib/voice/config";
+import { rephraseWithGemini } from "@/lib/voice/gemini-text-client";
 import type {
   VoiceLiveEvent,
   VoiceAudioInput,
@@ -14,10 +15,17 @@ interface LiveConnection {
   socket: WebSocket;
   session: VoiceSession;
   events: VoiceLiveEvent[];
+  acceptingAudio: boolean;
+  systemInstruction: string;
 }
 
-const connections = new Map<number, LiveConnection>();
-const TURN_TIMEOUT_MS = 8000;
+const globalStore = globalThis as typeof globalThis & {
+  geminiConnections?: Map<number, LiveConnection>;
+};
+const connections =
+  globalStore.geminiConnections ?? new Map<number, LiveConnection>();
+globalStore.geminiConnections = connections;
+const TURN_TIMEOUT_MS = 15000;
 
 export class GeminiLiveClient implements VoiceProvider {
   private readonly config: GeminiLiveConfig;
@@ -47,54 +55,17 @@ export class GeminiLiveClient implements VoiceProvider {
     const connection: LiveConnection = {
       socket,
       session,
-      events: []
+      events: [],
+      acceptingAudio: true,
+      systemInstruction: input.systemInstruction
     };
 
     connections.set(input.sessionId, connection);
 
     await waitForOpen(socket);
-    socket.addEventListener("message", async (message) => {
-      connection.events.push(
-        ...parseGeminiServerMessage(
-          input.sessionId,
-          await decodeWebSocketData(message.data)
-        )
-      );
-    });
-    socket.addEventListener("error", () => {
-      connection.events.push(
-        createEvent(input.sessionId, "error", {
-          raw: "Gemini Live WebSocket error"
-        })
-      );
-    });
-    socket.addEventListener("close", () => {
-      connection.events.push(createEvent(input.sessionId, "session_closed"));
-    });
+    bindSocketEvents(connection);
+    sendSetup(connection, input.systemInstruction);
 
-    socket.send(
-      JSON.stringify({
-        setup: {
-          model: `models/${this.config.model}`,
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            temperature: 0.4,
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: "Aoede"
-                }
-              }
-            }
-          },
-          systemInstruction: {
-            parts: [{ text: input.systemInstruction }]
-          },
-          inputAudioTranscription: {},
-          outputAudioTranscription: {}
-        }
-      })
-    );
 
     await waitForSetupComplete(connection);
     connection.events.push(createEvent(input.sessionId, "session_opened"));
@@ -109,22 +80,15 @@ export class GeminiLiveClient implements VoiceProvider {
       throw new Error("Gemini Live session is not open");
     }
 
+    // Send text turn on the SAME Live WebSocket (no second connection = no 409).
+    // The session is configured with responseModalities: ["AUDIO"], so
+    // Gemini will respond with spoken audio + output transcription.
     const eventStart = connection.events.length;
 
     connection.socket.send(
       JSON.stringify({
-        clientContent: {
-          turns: [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: buildTurnPrompt(input)
-                }
-              ]
-            }
-          ],
-          turnComplete: true
+        realtimeInput: {
+          text: buildTurnPrompt(input)
         }
       })
     );
@@ -132,7 +96,16 @@ export class GeminiLiveClient implements VoiceProvider {
     await waitForTurnComplete(connection, eventStart);
 
     const events = connection.events.slice(eventStart);
-    const modelText = events
+
+    // Extract text from output transcription (what the model spoke)
+    const modelTranscript = events
+      .filter((event) => event.type === "model_transcript" && event.text)
+      .map((event) => event.text)
+      .join(" ")
+      .trim();
+
+    // Also check model_text events as fallback
+    const modelText = modelTranscript || events
       .filter((event) => event.type === "model_text" && event.text)
       .map((event) => event.text)
       .join(" ")
@@ -149,6 +122,10 @@ export class GeminiLiveClient implements VoiceProvider {
 
     if (!connection || connection.socket.readyState !== WebSocket.OPEN) {
       throw new Error("Gemini Live session is not open");
+    }
+
+    if (!connection.acceptingAudio) {
+      return;
     }
 
     connection.socket.send(
@@ -170,6 +147,7 @@ export class GeminiLiveClient implements VoiceProvider {
       throw new Error("Gemini Live session is not open");
     }
 
+    connection.acceptingAudio = false;
     const eventStart = connection.events.length;
 
     connection.socket.send(
@@ -188,6 +166,8 @@ export class GeminiLiveClient implements VoiceProvider {
       .map((event) => event.text)
       .join(" ")
       .trim();
+
+    connection.acceptingAudio = true;
 
     return {
       transcriptText: transcriptText || undefined,
@@ -220,6 +200,55 @@ export class GeminiLiveClient implements VoiceProvider {
 
     return [event];
   }
+}
+
+function bindSocketEvents(connection: LiveConnection) {
+  connection.socket.addEventListener("message", async (message) => {
+    connection.events.push(
+      ...parseGeminiServerMessage(
+        connection.session.sessionId,
+        await decodeWebSocketData(message.data)
+      )
+    );
+  });
+  connection.socket.addEventListener("error", () => {
+    connection.events.push(
+      createEvent(connection.session.sessionId, "error", {
+        raw: "Gemini Live WebSocket error"
+      })
+    );
+  });
+  connection.socket.addEventListener("close", () => {
+    connection.events.push(
+      createEvent(connection.session.sessionId, "session_closed")
+    );
+  });
+}
+
+function sendSetup(connection: LiveConnection, systemInstruction: string) {
+  connection.socket.send(
+    JSON.stringify({
+      setup: {
+        model: `models/${connection.session.model}`,
+        generationConfig: {
+          responseModalities: ["AUDIO"],
+          temperature: 0.4,
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName: "Aoede"
+              }
+            }
+          }
+        },
+        systemInstruction: {
+          parts: [{ text: systemInstruction }]
+        },
+        inputAudioTranscription: {},
+        outputAudioTranscription: {}
+      }
+    })
+  );
 }
 
 function buildTurnPrompt(input: VoiceTurnInput): string {
@@ -406,10 +435,9 @@ async function waitForAudioTranscriptionOrTimeout(
   try {
     await waitForEvent(
       connection,
-      (event) =>
-        event.type === "user_transcript" || event.type === "turn_complete",
+      (event) => event.type === "turn_complete",
       eventStart,
-      5000
+      TURN_TIMEOUT_MS
     );
   } catch {
     return undefined;

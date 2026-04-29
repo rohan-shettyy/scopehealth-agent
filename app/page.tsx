@@ -44,6 +44,15 @@ interface TranscriptResponse {
     id: number;
     status: string;
   };
+  voiceEvents?: VoiceEvent[];
+}
+
+interface VoiceEvent {
+  type: string;
+  provider: string;
+  text?: string;
+  audioBase64?: string;
+  mimeType?: string;
 }
 
 interface TurnResponse {
@@ -54,16 +63,8 @@ interface TurnResponse {
     id: number;
     status: string;
   };
-  voiceEvents?: Array<{
-    type: string;
-    provider: string;
-    text?: string;
-    audioBase64?: string;
-    mimeType?: string;
-  }>;
+  voiceEvents?: VoiceEvent[];
 }
-
-type VoiceEvent = NonNullable<TurnResponse["voiceEvents"]>[number];
 
 type CallStatus =
   | "idle"
@@ -89,14 +90,19 @@ export default function Home() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const activeSessionIdRef = useRef<number | null>(null);
   const mutedRef = useRef(false);
   const processingAudioRef = useRef(false);
+  const audioPostInFlightRef = useRef(false);
+  const agentSpeakingRef = useRef(false);
   const hasSpeechRef = useRef(false);
   const silenceStartedAtRef = useRef<number | null>(null);
-  const lastAudioPostAtRef = useRef(0);
+  const utteranceStartedAtRef = useRef<number | null>(null);
+  const utteranceChunksRef = useRef<Int16Array[]>([]);
   const playbackSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  const playbackResolveRef = useRef<(() => void) | null>(null);
+  const playbackContextRef = useRef<AudioContext | null>(null);
 
   const isBusy =
     callStatus === "connecting" ||
@@ -173,6 +179,7 @@ export default function Home() {
       const data = await postJson<TranscriptResponse>("/api/workflow/call/start");
       applyTranscript(data);
       await startAudioCapture(data.session.id, mediaStream);
+      await playModelAudio(data.voiceEvents ?? []);
       setCallStatus("listening");
       setAudioNotice("Listening for patient speech");
     } catch (caughtError) {
@@ -264,88 +271,120 @@ export default function Home() {
   async function startAudioCapture(sessionId: number, mediaStream: MediaStream) {
     await stopAudioCapture();
 
-    const audioContext = new AudioContext();
+    const audioContext = new AudioContext({ sampleRate: 16000 });
+
+    // Load the AudioWorklet module
+    await audioContext.audioWorklet.addModule("/pcm-capture-processor.js");
+
     const source = audioContext.createMediaStreamSource(mediaStream);
-    const processor = audioContext.createScriptProcessor(4096, 1, 1);
+    const workletNode = new AudioWorkletNode(audioContext, "pcm-capture-processor");
 
     activeSessionIdRef.current = sessionId;
     audioContextRef.current = audioContext;
     mediaStreamRef.current = mediaStream;
     sourceRef.current = source;
-    processorRef.current = processor;
+    workletNodeRef.current = workletNode;
     processingAudioRef.current = false;
+    audioPostInFlightRef.current = false;
     hasSpeechRef.current = false;
     silenceStartedAtRef.current = null;
 
-    processor.onaudioprocess = (event) => {
+    workletNode.port.onmessage = (event: MessageEvent<Float32Array>) => {
       if (
         !activeSessionIdRef.current ||
         mutedRef.current ||
-        processingAudioRef.current
+        audioPostInFlightRef.current ||
+        (processingAudioRef.current && !agentSpeakingRef.current)
       ) {
         return;
       }
 
-      const inputBuffer = event.inputBuffer.getChannelData(0);
+      const inputBuffer = event.data;
       const rms = getRms(inputBuffer);
       const now = Date.now();
-      const speechDetected = rms > 0.018;
+      const speechDetected = rms > (agentSpeakingRef.current ? 0.035 : 0.018);
 
       if (speechDetected) {
+        if (agentSpeakingRef.current) {
+          interruptAgentPlayback();
+        }
+
         hasSpeechRef.current = true;
+        utteranceStartedAtRef.current ??= now;
         silenceStartedAtRef.current = null;
         setCallStatus("listening");
         setAudioNotice("Listening: speech detected");
       } else if (hasSpeechRef.current) {
         silenceStartedAtRef.current ??= now;
 
-        if (now - silenceStartedAtRef.current > 1000) {
+        if (
+          now - silenceStartedAtRef.current > 900 ||
+          (utteranceStartedAtRef.current !== null &&
+            now - utteranceStartedAtRef.current > 12000)
+        ) {
           void finishAudioTurn();
           return;
         }
       }
 
-      if (now - lastAudioPostAtRef.current < 120) {
-        return;
-      }
+      if (hasSpeechRef.current) {
+        const pcm = convertFloat32ToPcm16(
+          inputBuffer,
+          audioContext.sampleRate,
+          16000
+        );
 
-      lastAudioPostAtRef.current = now;
-
-      const pcm = convertFloat32ToPcm16(
-        inputBuffer,
-        audioContext.sampleRate,
-        16000
-      );
-
-      if (pcm.length > 0) {
-        void postJson("/api/workflow/call/audio", {
-          sessionId: activeSessionIdRef.current,
-          audioBase64: int16ToBase64(pcm),
-          mimeType: "audio/pcm;rate=16000"
-        }).catch((caughtError) => {
-          setError(formatError(caughtError));
-        });
+        if (pcm.length > 0) {
+          utteranceChunksRef.current.push(pcm);
+        }
       }
     };
 
-    source.connect(processor);
-    processor.connect(audioContext.destination);
+    source.connect(workletNode);
+    // Connect to destination so the worklet stays alive
+    workletNode.connect(audioContext.destination);
   }
 
   async function finishAudioTurn() {
     const sessionId = activeSessionIdRef.current;
 
-    if (!sessionId || processingAudioRef.current || !hasSpeechRef.current) {
+    const audioChunks = utteranceChunksRef.current;
+
+    if (
+      !sessionId ||
+      processingAudioRef.current ||
+      !hasSpeechRef.current ||
+      audioChunks.length === 0
+    ) {
       return;
     }
 
     processingAudioRef.current = true;
+    audioPostInFlightRef.current = true;
     hasSpeechRef.current = false;
     silenceStartedAtRef.current = null;
+    utteranceStartedAtRef.current = null;
+    utteranceChunksRef.current = [];
     setCallStatus("processing");
     setAudioNotice("Processing speech");
 
     try {
+      const audioData = await postJson<{ voiceEvents?: VoiceEvent[] }>(
+        "/api/workflow/call/audio",
+        {
+          sessionId,
+          audioBase64: int16ToBase64(concatInt16(audioChunks)),
+          mimeType: "audio/pcm;rate=16000"
+        }
+      );
+      const providerError = audioData.voiceEvents?.find(
+        (event) => event.type === "error"
+      );
+
+      if (providerError?.text) {
+        throw new Error(providerError.text);
+      }
+
       const data = await postJson<TurnResponse>("/api/workflow/call/audio/end", {
         sessionId
       });
@@ -366,34 +405,30 @@ export default function Home() {
       setError(formatError(caughtError));
     } finally {
       processingAudioRef.current = false;
+      audioPostInFlightRef.current = false;
     }
   }
 
   async function stopAudioCapture() {
     processingAudioRef.current = false;
+    audioPostInFlightRef.current = false;
+    agentSpeakingRef.current = false;
     activeSessionIdRef.current = null;
     hasSpeechRef.current = false;
     silenceStartedAtRef.current = null;
+    utteranceStartedAtRef.current = null;
+    utteranceChunksRef.current = [];
+    interruptAgentPlayback();
 
-    processorRef.current?.disconnect();
+    workletNodeRef.current?.disconnect();
     sourceRef.current?.disconnect();
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-
-    for (const source of playbackSourcesRef.current) {
-      try {
-        source.stop();
-      } catch {
-        // Ignore already-ended playback sources.
-      }
-    }
-
-    playbackSourcesRef.current = [];
 
     if (audioContextRef.current?.state !== "closed") {
       await audioContextRef.current?.close();
     }
 
-    processorRef.current = null;
+    workletNodeRef.current = null;
     sourceRef.current = null;
     mediaStreamRef.current = null;
     audioContextRef.current = null;
@@ -408,38 +443,80 @@ export default function Home() {
       return;
     }
 
-    const audioContext = audioContextRef.current ?? new AudioContext();
-    audioContextRef.current = audioContext;
-    let startTime = Math.max(audioContext.currentTime, audioContext.currentTime + 0.05);
+    // Use a dedicated playback AudioContext at the system default rate
+    // so 24kHz Gemini audio is resampled correctly (capture context is 16kHz).
+    if (!playbackContextRef.current || playbackContextRef.current.state === "closed") {
+      playbackContextRef.current = new AudioContext();
+    }
+    const playbackContext = playbackContextRef.current;
 
+    // Ensure AudioContext is resumed (browser autoplay policy)
+    if (playbackContext.state === "suspended") {
+      await playbackContext.resume();
+    }
+
+    let startTime = Math.max(playbackContext.currentTime, playbackContext.currentTime + 0.05);
+
+    agentSpeakingRef.current = true;
+    hasSpeechRef.current = false;
+    silenceStartedAtRef.current = null;
     setCallStatus("speaking");
     setAudioNotice("Agent speaking");
 
-    for (const event of audioEvents) {
-      const sampleRate = getPcmRate(event.mimeType) ?? 24000;
-      const samples = base64ToInt16(event.audioBase64 ?? "");
-      const audioBuffer = audioContext.createBuffer(
-        1,
-        samples.length,
-        sampleRate
-      );
-      const channelData = audioBuffer.getChannelData(0);
+    try {
+      for (const event of audioEvents) {
+        const sampleRate = getPcmRate(event.mimeType) ?? 24000;
+        const samples = base64ToInt16(event.audioBase64 ?? "");
+        const audioBuffer = playbackContext.createBuffer(
+          1,
+          samples.length,
+          sampleRate
+        );
+        const channelData = audioBuffer.getChannelData(0);
 
-      for (let index = 0; index < samples.length; index += 1) {
-        channelData[index] = samples[index] / 32768;
+        for (let index = 0; index < samples.length; index += 1) {
+          channelData[index] = samples[index] / 32768;
+        }
+
+        const source = playbackContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(playbackContext.destination);
+        source.start(startTime);
+        playbackSourcesRef.current.push(source);
+        startTime += audioBuffer.duration;
       }
 
-      const source = audioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioContext.destination);
-      source.start(startTime);
-      playbackSourcesRef.current.push(source);
-      startTime += audioBuffer.duration;
+      await new Promise((resolve) => {
+        const timeout = window.setTimeout(
+          resolve,
+          Math.max((startTime - playbackContext.currentTime) * 1000, 0)
+        );
+        playbackResolveRef.current = () => {
+          window.clearTimeout(timeout);
+          resolve(undefined);
+        };
+      });
+    } finally {
+      agentSpeakingRef.current = false;
+      playbackResolveRef.current = null;
+      playbackSourcesRef.current = [];
+    }
+  }
+
+  function interruptAgentPlayback() {
+    for (const source of playbackSourcesRef.current) {
+      try {
+        source.stop();
+      } catch {
+        // Ignore already-ended playback sources.
+      }
     }
 
-    await new Promise((resolve) => {
-      window.setTimeout(resolve, Math.max((startTime - audioContext.currentTime) * 1000, 0));
-    });
+    playbackSourcesRef.current = [];
+    playbackResolveRef.current?.();
+    playbackResolveRef.current = null;
+    agentSpeakingRef.current = false;
+    setAudioNotice("Interrupted; listening");
   }
 
   return (
@@ -726,6 +803,19 @@ function int16ToBase64(samples: Int16Array) {
   }
 
   return window.btoa(binary);
+}
+
+function concatInt16(chunks: Int16Array[]) {
+  const totalLength = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const combined = new Int16Array(totalLength);
+  let offset = 0;
+
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return combined;
 }
 
 function base64ToInt16(base64: string) {

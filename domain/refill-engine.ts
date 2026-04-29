@@ -6,6 +6,7 @@ import {
   type WorkflowStep,
   getNextWorkflowStep
 } from "./workflow";
+import { parseSpokenDateKey } from "./spoken-date";
 
 export interface InsuranceSummary {
   insurancePolicyId: number;
@@ -258,7 +259,7 @@ function normalizeDate(value: string): string | undefined {
     return toDateKey(year, slashMatch[1], slashMatch[2]);
   }
 
-  return undefined;
+  return parseSpokenDateKey(trimmed);
 }
 
 function toDateKey(year: string, month: string, day: string): string {
