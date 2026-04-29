@@ -1,11 +1,441 @@
+"use client";
+
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+
+type MessageRole = "system" | "assistant" | "user" | "tool";
+
+interface TranscriptMessage {
+  id: number;
+  role: MessageRole;
+  content: string;
+  sequence: number;
+  createdAt: string;
+}
+
+interface SessionState {
+  channel: "call" | "sms";
+  status: "active" | "ended" | "completed";
+  identityVerified: boolean;
+  nextExpectedStep: string;
+  lastCompletedStep?: string;
+  selectedMedication?: {
+    medicationName: string;
+    strength: string;
+  };
+  selectedPharmacy?: {
+    name: string;
+    addressLine1?: string;
+    isAlternate?: boolean;
+  };
+  insuranceVerified: boolean;
+  copayAmountCents?: number;
+}
+
+interface SessionSnapshot {
+  id: number;
+  sessionKey: string;
+  state: SessionState;
+}
+
+interface TranscriptResponse {
+  session: SessionSnapshot;
+  messages: TranscriptMessage[];
+  refillRequest?: {
+    id: number;
+    status: string;
+  };
+}
+
+interface TurnResponse {
+  session: SessionSnapshot;
+  agentReply: string;
+  isComplete: boolean;
+  refillRequest?: {
+    id: number;
+    status: string;
+  };
+  voiceEvents?: Array<{
+    type: string;
+    provider: string;
+    text?: string;
+  }>;
+}
+
+type CallStatus = "idle" | "connecting" | "connected" | "thinking" | "ended";
+
 export default function Home() {
+  const [session, setSession] = useState<SessionSnapshot | null>(null);
+  const [messages, setMessages] = useState<TranscriptMessage[]>([]);
+  const [refillRequest, setRefillRequest] =
+    useState<TranscriptResponse["refillRequest"]>();
+  const [input, setInput] = useState("");
+  const [callStatus, setCallStatus] = useState<CallStatus>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+
+  const isBusy = callStatus === "connecting" || callStatus === "thinking";
+  const canSend =
+    session?.state.channel === "call" &&
+    session.state.status === "active" &&
+    !isBusy;
+
+  const workflowSummary = useMemo(() => {
+    if (!session) {
+      return "Start a simulated call to begin.";
+    }
+
+    const state = session.state;
+    const details = [
+      state.selectedMedication
+        ? `${state.selectedMedication.medicationName} ${state.selectedMedication.strength}`
+        : undefined,
+      state.selectedPharmacy
+        ? state.selectedPharmacy.addressLine1
+          ? `${state.selectedPharmacy.name}, ${state.selectedPharmacy.addressLine1}`
+          : state.selectedPharmacy.name
+        : undefined,
+      state.copayAmountCents !== undefined
+        ? `$${(state.copayAmountCents / 100).toFixed(2).replace(/\.00$/, "")}`
+        : undefined
+    ].filter(Boolean);
+
+    return details.length > 0 ? details.join(" • ") : "No refill details collected yet.";
+  }, [session]);
+
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, callStatus]);
+
+  useEffect(() => {
+    if (!session || session.state.status !== "active") {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void refreshSession(session.id, { quiet: true });
+    }, 2500);
+
+    return () => window.clearInterval(interval);
+  }, [session?.id, session?.state.status]);
+
+  async function startCall() {
+    setError(null);
+    setCallStatus("connecting");
+
+    try {
+      const data = await postJson<TranscriptResponse>("/api/workflow/call/start");
+      applyTranscript(data);
+      setCallStatus("connected");
+    } catch (caughtError) {
+      setCallStatus("idle");
+      setError(formatError(caughtError));
+    }
+  }
+
+  async function submitTurn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!session || !input.trim()) {
+      return;
+    }
+
+    setError(null);
+    setCallStatus("thinking");
+
+    try {
+      const data = await postJson<TurnResponse>("/api/workflow/call/input", {
+        sessionId: session.id,
+        text: input.trim()
+      });
+      setInput("");
+      setSession(data.session);
+      setRefillRequest(data.refillRequest);
+      await refreshSession(data.session.id, { quiet: true });
+      setCallStatus(data.session.state.status === "completed" ? "ended" : "connected");
+    } catch (caughtError) {
+      setCallStatus("connected");
+      setError(formatError(caughtError));
+    }
+  }
+
+  async function hangUp() {
+    if (!session) {
+      return;
+    }
+
+    setError(null);
+    setCallStatus("thinking");
+
+    try {
+      const data = await postJson<TranscriptResponse>("/api/workflow/call/hangup", {
+        sessionId: session.id
+      });
+      applyTranscript(data);
+      setCallStatus("ended");
+    } catch (caughtError) {
+      setCallStatus("connected");
+      setError(formatError(caughtError));
+    }
+  }
+
+  async function refreshSession(
+    sessionId: number,
+    options: { quiet?: boolean } = {}
+  ) {
+    try {
+      const response = await fetch(`/api/workflow/sessions/${sessionId}`);
+      const data = (await response.json()) as TranscriptResponse | { error: string };
+
+      if (!response.ok) {
+        throw new Error("error" in data ? data.error : "Unable to fetch session");
+      }
+
+      applyTranscript(data as TranscriptResponse);
+    } catch (caughtError) {
+      if (!options.quiet) {
+        setError(formatError(caughtError));
+      }
+    }
+  }
+
+  function applyTranscript(data: TranscriptResponse) {
+    setSession(data.session);
+    setMessages(data.messages);
+    setRefillRequest(data.refillRequest);
+
+    if (data.session.state.status === "completed") {
+      setCallStatus("ended");
+    }
+  }
+
   return (
-    <main className="app-shell">
-      <section className="intro">
-        <p className="eyebrow">Local demo scaffold</p>
-        <h1>Prescription Refill Voice Agent</h1>
-        <p className="status">Setup complete</p>
+    <main className="demo-shell">
+      <header className="app-header">
+        <div>
+          <p className="eyebrow">Prescription Refill Voice Agent</p>
+          <h1>Simulated call workflow</h1>
+        </div>
+        <div className="header-actions">
+          <StatusBadge label={formatCallStatus(callStatus)} tone={callStatus} />
+          <StatusBadge
+            label={session?.state.nextExpectedStep ?? "not started"}
+            tone="neutral"
+          />
+        </div>
+      </header>
+
+      <section className="workspace-grid">
+        <section className="call-panel" aria-label="Live call transcript">
+          <div className="panel-header">
+            <div>
+              <p className="panel-kicker">Call mode</p>
+              <h2>Live transcript</h2>
+            </div>
+            <div className="panel-actions">
+              <button
+                className="primary-button"
+                type="button"
+                onClick={startCall}
+                disabled={isBusy || callStatus === "connected"}
+              >
+                {callStatus === "idle" ? "Start call" : "Restart call"}
+              </button>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={hangUp}
+                disabled={!session || session.state.channel !== "call" || isBusy}
+              >
+                Hang up
+              </button>
+            </div>
+          </div>
+
+          <div className="state-strip" aria-label="Workflow status">
+            <StatusBadge
+              label={session?.state.identityVerified ? "verified" : "not verified"}
+              tone={session?.state.identityVerified ? "good" : "warning"}
+            />
+            <StatusBadge
+              label={session?.state.insuranceVerified ? "insurance verified" : "insurance pending"}
+              tone={session?.state.insuranceVerified ? "good" : "neutral"}
+            />
+            <StatusBadge
+              label={refillRequest ? `refill ${refillRequest.status.toLowerCase()}` : "no refill yet"}
+              tone={refillRequest ? "good" : "neutral"}
+            />
+          </div>
+
+          <div className="transcript-window">
+            {messages.length === 0 ? (
+              <div className="empty-transcript">
+                <p>Start a call to create a backend session and open the voice provider.</p>
+              </div>
+            ) : (
+              messages.map((message) => (
+                <article
+                  className={`message-row message-${message.role}`}
+                  key={message.id}
+                >
+                  <div className="message-meta">
+                    <span>{formatRole(message.role)}</span>
+                    <time dateTime={message.createdAt}>
+                      {new Date(message.createdAt).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit"
+                      })}
+                    </time>
+                  </div>
+                  <p>{message.content}</p>
+                </article>
+              ))
+            )}
+            {isBusy ? (
+              <div className="typing-indicator" aria-live="polite">
+                <span />
+                <span />
+                <span />
+              </div>
+            ) : null}
+            <div ref={transcriptEndRef} />
+          </div>
+
+          <form className="turn-form" onSubmit={submitTurn}>
+            <input
+              aria-label="Patient call input"
+              placeholder={
+                canSend
+                  ? "Type the patient's spoken response..."
+                  : "Start a call to enable patient input"
+              }
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              disabled={!canSend}
+            />
+            <button type="submit" disabled={!canSend || !input.trim()}>
+              Send
+            </button>
+          </form>
+
+          {error ? <p className="error-banner">{error}</p> : null}
+        </section>
+
+        <aside className="debug-panel" aria-label="Session state">
+          <div className="panel-header compact">
+            <div>
+              <p className="panel-kicker">Session state</p>
+              <h2>Workflow snapshot</h2>
+            </div>
+          </div>
+
+          <dl className="state-list">
+            <div>
+              <dt>Session</dt>
+              <dd>{session ? `#${session.id}` : "None"}</dd>
+            </div>
+            <div>
+              <dt>Channel</dt>
+              <dd>{session?.state.channel ?? "idle"}</dd>
+            </div>
+            <div>
+              <dt>Status</dt>
+              <dd>{session?.state.status ?? "idle"}</dd>
+            </div>
+            <div>
+              <dt>Current step</dt>
+              <dd>{session?.state.nextExpectedStep ?? "not started"}</dd>
+            </div>
+            <div>
+              <dt>Collected</dt>
+              <dd>{workflowSummary}</dd>
+            </div>
+          </dl>
+
+          <div className="sms-panel">
+            <div>
+              <p className="panel-kicker">SMS mode</p>
+              <h2>
+                {session?.state.channel === "sms"
+                  ? "Fallback ready"
+                  : "Fallback inactive"}
+              </h2>
+            </div>
+            <p>
+              {session?.state.channel === "sms"
+                ? "The call has moved to SMS continuation on the backend. This task does not add SMS reply controls."
+                : "SMS remains text/template-first. This panel stays inactive until fallback is triggered."}
+            </p>
+          </div>
+        </aside>
       </section>
     </main>
   );
+}
+
+function StatusBadge({
+  label,
+  tone
+}: {
+  label: string;
+  tone: string;
+}) {
+  return <span className={`status-badge status-${tone}`}>{label}</span>;
+}
+
+async function postJson<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  const data = (await response.json()) as unknown;
+
+  if (!response.ok) {
+    throw new Error(isErrorResponse(data) ? data.error : "Request failed");
+  }
+
+  return data as T;
+}
+
+function isErrorResponse(value: unknown): value is { error: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "error" in value &&
+    typeof (value as { error?: unknown }).error === "string"
+  );
+}
+
+function formatRole(role: MessageRole) {
+  switch (role) {
+    case "assistant":
+      return "Agent";
+    case "user":
+      return "Patient";
+    case "tool":
+      return "Tool";
+    case "system":
+      return "System";
+  }
+}
+
+function formatCallStatus(status: CallStatus) {
+  switch (status) {
+    case "idle":
+      return "idle";
+    case "connecting":
+      return "connecting";
+    case "connected":
+      return "connected";
+    case "thinking":
+      return "agent responding";
+    case "ended":
+      return "ended";
+  }
+}
+
+function formatError(error: unknown) {
+  return error instanceof Error ? error.message : "Unexpected error";
 }
