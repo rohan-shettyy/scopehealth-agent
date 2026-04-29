@@ -14,3 +14,168 @@ model AppSetting {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+model Patient {
+  id                   Int                   @id @default(autoincrement())
+  firstName            String
+  lastName             String
+  dateOfBirth          DateTime
+  phone                String                @unique
+  prescriptions        Prescription[]
+  insurancePolicies    InsurancePolicy[]
+  refillRequests       RefillRequest[]
+  conversationSessions ConversationSession[]
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+}
+
+model Prescription {
+  id                 Int                   @id @default(autoincrement())
+  patientId          Int
+  medicationName     String
+  strength           String
+  directions         String
+  status             PrescriptionStatus    @default(ACTIVE)
+  patient            Patient               @relation(fields: [patientId], references: [id])
+  copayRules         CopayRule[]
+  refillRequests     RefillRequest[]
+  selectedInSessions ConversationSession[] @relation("SelectedMedication")
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  @@unique([patientId, medicationName, strength])
+}
+
+model Pharmacy {
+  id                 Int                   @id @default(autoincrement())
+  name               String
+  addressLine1       String
+  addressLine2       String?
+  city               String?
+  state              String?
+  postalCode         String?
+  phone              String?
+  refillRequests     RefillRequest[]
+  selectedInSessions ConversationSession[] @relation("SelectedPharmacy")
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  @@unique([name, addressLine1])
+}
+
+model InsurancePolicy {
+  id             Int             @id @default(autoincrement())
+  patientId      Int
+  payerName      String
+  planName       String
+  memberId       String          @unique
+  active         Boolean         @default(true)
+  patient        Patient         @relation(fields: [patientId], references: [id])
+  copayRules     CopayRule[]
+  refillRequests RefillRequest[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+}
+
+model CopayRule {
+  id                Int             @id @default(autoincrement())
+  insurancePolicyId Int
+  prescriptionId    Int
+  amountCents       Int
+  insurancePolicy   InsurancePolicy @relation(fields: [insurancePolicyId], references: [id])
+  prescription      Prescription    @relation(fields: [prescriptionId], references: [id])
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@unique([insurancePolicyId, prescriptionId])
+}
+
+model RefillRequest {
+  id                  Int                  @id @default(autoincrement())
+  patientId           Int
+  prescriptionId      Int?
+  pharmacyId          Int?
+  insurancePolicyId   Int?
+  status              RefillRequestStatus  @default(DRAFT)
+  identityVerified    Boolean              @default(false)
+  verifiedAt          DateTime?
+  insuranceVerified   Boolean              @default(false)
+  copayAmountCents    Int?
+  lastCompletedStep   String?
+  nextExpectedStep    String?
+  patient             Patient              @relation(fields: [patientId], references: [id])
+  prescription        Prescription?        @relation(fields: [prescriptionId], references: [id])
+  pharmacy            Pharmacy?            @relation(fields: [pharmacyId], references: [id])
+  insurancePolicy     InsurancePolicy?     @relation(fields: [insurancePolicyId], references: [id])
+  conversationSession ConversationSession?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+}
+
+model ConversationSession {
+  id                   Int                       @id @default(autoincrement())
+  sessionKey           String                    @unique
+  patientId            Int?
+  refillRequestId      Int?                      @unique
+  channel              ConversationChannel
+  status               ConversationSessionStatus @default(OPEN)
+  identityVerified     Boolean                   @default(false)
+  verifiedAt           DateTime?
+  selectedMedicationId Int?
+  selectedPharmacyId   Int?
+  insuranceVerified    Boolean                   @default(false)
+  copayAmountCents     Int?
+  lastCompletedStep    String?
+  nextExpectedStep     String?
+  patient              Patient?                  @relation(fields: [patientId], references: [id])
+  refillRequest        RefillRequest?            @relation(fields: [refillRequestId], references: [id])
+  selectedMedication   Prescription?             @relation("SelectedMedication", fields: [selectedMedicationId], references: [id])
+  selectedPharmacy     Pharmacy?                 @relation("SelectedPharmacy", fields: [selectedPharmacyId], references: [id])
+  messages             ConversationMessage[]
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+}
+
+model ConversationMessage {
+  id                    Int                 @id @default(autoincrement())
+  conversationSessionId Int
+  role                  MessageRole
+  content               String
+  sequence              Int
+  conversationSession   ConversationSession @relation(fields: [conversationSessionId], references: [id])
+  createdAt             DateTime            @default(now())
+
+  @@unique([conversationSessionId, sequence])
+}
+
+enum PrescriptionStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum RefillRequestStatus {
+  DRAFT
+  IN_PROGRESS
+  SUBMITTED
+  COMPLETED
+  CANCELLED
+}
+
+enum ConversationChannel {
+  VOICE
+  WEB
+  TEST
+}
+
+enum ConversationSessionStatus {
+  OPEN
+  COMPLETED
+  ABANDONED
+}
+
+enum MessageRole {
+  SYSTEM
+  ASSISTANT
+  USER
+  TOOL
+}
