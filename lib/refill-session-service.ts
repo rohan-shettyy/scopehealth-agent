@@ -382,14 +382,14 @@ async function createCallVoiceSession(sessionId: number) {
         sessionId,
         role: "system",
         content:
-          "Gemini Live is not enabled for this server process. Text turns still work, but microphone transcription requires ENABLE_GEMINI_LIVE=true and GEMINI_API_KEY."
+          "Gemini Live is not enabled for this server process. Continuing in text-input call mode; microphone transcription and spoken audio require ENABLE_GEMINI_LIVE=true and GEMINI_API_KEY."
       });
     }
   } catch (error) {
     await appendConversationMessage({
       sessionId,
       role: "system",
-      content: `Voice provider unavailable; using deterministic call text. ${formatError(error)}`
+      content: `Gemini Live unavailable; continuing in text-input call mode. ${formatError(error)}`
     });
   }
 }
@@ -411,7 +411,7 @@ async function phraseCallReply(
     await appendConversationMessage({
       sessionId,
       role: "system",
-      content: `Voice provider turn failed; using deterministic reply. ${formatError(error)}`
+      content: `Gemini voice turn failed; showing deterministic text reply. ${formatError(error)}`
     });
 
     return {
@@ -473,7 +473,7 @@ async function closeCallVoiceSession(sessionId: number) {
     await appendConversationMessage({
       sessionId,
       role: "system",
-      content: `Voice provider close failed. ${formatError(error)}`
+      content: `Gemini Live cleanup failed after call end. ${formatError(error)}`
     });
   }
 }

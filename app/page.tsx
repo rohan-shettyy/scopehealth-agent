@@ -88,6 +88,9 @@ type CallStatus =
   | "thinking"
   | "ended";
 
+type MicStatus = "idle" | "requesting" | "granted" | "unavailable" | "stopped";
+type VoiceStatus = "idle" | "connecting" | "live" | "text-fallback" | "unavailable" | "closed";
+
 export default function Home() {
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
@@ -98,6 +101,8 @@ export default function Home() {
   const [callStatus, setCallStatus] = useState<CallStatus>("idle");
   const [isMuted, setIsMuted] = useState(false);
   const [audioNotice, setAudioNotice] = useState("Microphone idle");
+  const [micStatus, setMicStatus] = useState<MicStatus>("idle");
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -133,6 +138,11 @@ export default function Home() {
   const smsMessages = useMemo(
     () => getSmsThreadMessages(messages, session?.state.channel === "sms"),
     [messages, session?.state.channel]
+  );
+  const fallbackTriggered = messages.some(
+    (message) =>
+      message.role === "system" &&
+      message.content.includes("SMS fallback activated")
   );
 
   const workflowSummary = useMemo(() => {
@@ -184,29 +194,113 @@ export default function Home() {
     };
   }, []);
 
+  useEffect(() => {
+    const sessionId = window.localStorage.getItem("refill-demo-session-id");
+
+    if (sessionId && !session) {
+      void refreshSession(Number(sessionId), { quiet: true });
+    }
+  }, [session]);
+
   async function startCall() {
     setError(null);
     setCallStatus("connecting");
+    setVoiceStatus("connecting");
+    setMicStatus("requesting");
+    setAudioNotice("Requesting microphone access");
+
+    let mediaStream: MediaStream;
 
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
+      mediaStream = await requestMicrophone();
+      setMicStatus("granted");
+    } catch (caughtError) {
+      await startTextFallbackCall(caughtError);
+      return;
+    }
+
+    try {
       const data = await postJson<TranscriptResponse>("/api/workflow/call/start");
       applyTranscript(data);
-      await startAudioCapture(data.session.id, mediaStream);
-      await playModelAudio(data.voiceEvents ?? []);
+
+      try {
+        await startAudioCapture(data.session.id, mediaStream);
+      } catch (caughtError) {
+        mediaStream.getTracks().forEach((track) => track.stop());
+        setCallStatus("connected");
+        setMicStatus("unavailable");
+        setVoiceStatus(getVoiceStatusFromTranscript(data.messages, data.voiceEvents));
+        setAudioNotice("Text-input call mode active");
+        setError(
+          `Microphone setup failed after the call connected. Continue with text input. ${formatError(caughtError)}`
+        );
+        return;
+      }
+
+      let playbackFailed = false;
+
+      try {
+        await playModelAudio(data.voiceEvents ?? []);
+      } catch (caughtError) {
+        playbackFailed = true;
+        setVoiceStatus("text-fallback");
+        setError(
+          `Spoken audio playback failed. Continue with text input. ${formatError(caughtError)}`
+        );
+      }
+
       setCallStatus("listening");
+      if (!playbackFailed) {
+        setVoiceStatus(getVoiceStatusFromTranscript(data.messages, data.voiceEvents));
+      }
       setAudioNotice("Listening for patient speech");
     } catch (caughtError) {
       await stopAudioCapture();
+      mediaStream.getTracks().forEach((track) => track.stop());
       setCallStatus("idle");
+      setVoiceStatus("unavailable");
       setError(formatError(caughtError));
+    }
+  }
+
+  async function requestMicrophone() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("Microphone capture is not available in this browser.");
+    }
+
+    return navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
+    });
+  }
+
+  async function startTextFallbackCall(caughtError: unknown) {
+    try {
+      const data = await postJson<TranscriptResponse>("/api/workflow/call/start");
+
+      applyTranscript(data);
+      setCallStatus("connected");
+      setMicStatus("unavailable");
+      const inferredVoiceStatus = getVoiceStatusFromTranscript(
+        data.messages,
+        data.voiceEvents
+      );
+      setVoiceStatus(
+        inferredVoiceStatus === "live" ? "text-fallback" : inferredVoiceStatus
+      );
+      setAudioNotice("Text-input call mode active");
+      setError(
+        `Microphone or voice audio was unavailable, so the demo is continuing in text-input call mode. ${formatError(caughtError)}`
+      );
+    } catch (fallbackError) {
+      setCallStatus("idle");
+      setMicStatus("unavailable");
+      setVoiceStatus("unavailable");
+      setError(formatError(fallbackError));
     }
   }
 
@@ -230,9 +324,11 @@ export default function Home() {
       setRefillRequest(data.refillRequest);
       await refreshSession(data.session.id, { quiet: true });
       await playModelAudio(data.voiceEvents ?? []);
+      setVoiceStatus(getVoiceStatusFromTranscript(messages, data.voiceEvents));
       setCallStatus(data.session.state.status === "completed" ? "ended" : "connected");
     } catch (caughtError) {
       setCallStatus("connected");
+      setVoiceStatus("text-fallback");
       setError(formatError(caughtError));
     }
   }
@@ -254,9 +350,11 @@ export default function Home() {
       });
       applyTranscript(data);
       setCallStatus("ended");
+      setVoiceStatus("closed");
       setAudioNotice("Call ended; SMS fallback active");
     } catch (caughtError) {
       setCallStatus("ended");
+      setVoiceStatus("closed");
       setError(formatError(caughtError));
     }
   }
@@ -309,12 +407,28 @@ export default function Home() {
   }
 
   function applyTranscript(data: TranscriptResponse) {
+    const inferredVoiceStatus = getVoiceStatusFromTranscript(
+      data.messages,
+      data.voiceEvents
+    );
+
     setSession(data.session);
     setMessages(data.messages);
     setRefillRequest(data.refillRequest);
+    window.localStorage.setItem("refill-demo-session-id", String(data.session.id));
+    setVoiceStatus((current) =>
+      current === "closed" || inferredVoiceStatus === "idle"
+        ? current
+        : inferredVoiceStatus
+    );
 
     if (data.session.state.status === "completed") {
       setCallStatus("ended");
+      window.localStorage.removeItem("refill-demo-session-id");
+    } else if (data.session.state.channel === "sms") {
+      setCallStatus("ended");
+    } else if (data.session.state.channel === "call") {
+      setCallStatus((current) => current === "idle" ? "connected" : current);
     }
   }
 
@@ -482,6 +596,7 @@ export default function Home() {
     sourceRef.current = null;
     mediaStreamRef.current = null;
     audioContextRef.current = null;
+    setMicStatus((current) => current === "idle" ? current : "stopped");
   }
 
   async function playModelAudio(events: VoiceEvent[]) {
@@ -579,6 +694,10 @@ export default function Home() {
         <div className="header-actions">
           <StatusBadge label={formatCallStatus(callStatus)} tone={callStatus} />
           <StatusBadge
+            label={`voice ${formatVoiceStatus(voiceStatus)}`}
+            tone={voiceStatusTone(voiceStatus)}
+          />
+          <StatusBadge
             label={session?.state.nextExpectedStep ?? "not started"}
             tone="neutral"
           />
@@ -622,6 +741,7 @@ export default function Home() {
 
           <div className="state-strip" aria-label="Workflow status">
             <StatusBadge label={audioNotice} tone={isMuted ? "warning" : "neutral"} />
+            <StatusBadge label={`mic ${formatMicStatus(micStatus)}`} tone={micStatusTone(micStatus)} />
             <StatusBadge
               label={session?.state.identityVerified ? "verified" : "not verified"}
               tone={session?.state.identityVerified ? "good" : "warning"}
@@ -716,8 +836,52 @@ export default function Home() {
               <dd>{session?.state.nextExpectedStep ?? "not started"}</dd>
             </div>
             <div>
+              <dt>Last completed</dt>
+              <dd>{session?.state.lastCompletedStep ?? "none"}</dd>
+            </div>
+            <div>
               <dt>Collected</dt>
               <dd>{workflowSummary}</dd>
+            </div>
+            <div>
+              <dt>Medication</dt>
+              <dd>
+                {session?.state.selectedMedication
+                  ? `${session.state.selectedMedication.medicationName} ${session.state.selectedMedication.strength}`
+                  : "pending"}
+              </dd>
+            </div>
+            <div>
+              <dt>Pharmacy</dt>
+              <dd>
+                {session?.state.selectedPharmacy
+                  ? formatPharmacy(session.state.selectedPharmacy)
+                  : "pending"}
+              </dd>
+            </div>
+            <div>
+              <dt>Insurance</dt>
+              <dd>{session?.state.insuranceVerified ? "verified" : "pending"}</dd>
+            </div>
+            <div>
+              <dt>Copay</dt>
+              <dd>
+                {session?.state.copayAmountCents !== undefined
+                  ? formatCurrency(session.state.copayAmountCents)
+                  : "pending"}
+              </dd>
+            </div>
+            <div>
+              <dt>Gemini</dt>
+              <dd>{formatVoiceStatus(voiceStatus)}</dd>
+            </div>
+            <div>
+              <dt>Mic</dt>
+              <dd>{formatMicStatus(micStatus)}</dd>
+            </div>
+            <div>
+              <dt>Fallback</dt>
+              <dd>{fallbackTriggered ? "SMS fallback triggered" : "not triggered"}</dd>
             </div>
           </dl>
 
@@ -889,6 +1053,98 @@ function formatCallStatus(status: CallStatus) {
       return "agent responding";
     case "ended":
       return "ended";
+  }
+}
+
+function getVoiceStatusFromTranscript(
+  messages: TranscriptMessage[],
+  voiceEvents?: VoiceEvent[]
+): VoiceStatus {
+  const systemText = messages
+    .filter((message) => message.role === "system")
+    .map((message) => message.content)
+    .join(" ");
+
+  if (systemText.includes("Gemini Live unavailable")) {
+    return "unavailable";
+  }
+
+  if (
+    systemText.includes("text-input call mode") ||
+    systemText.includes("Gemini voice turn failed")
+  ) {
+    return "text-fallback";
+  }
+
+  if (systemText.includes("SMS fallback activated")) {
+    return "closed";
+  }
+
+  if (voiceEvents?.some((event) => event.provider === "gemini-live")) {
+    return "live";
+  }
+
+  return "idle";
+}
+
+function formatVoiceStatus(status: VoiceStatus) {
+  switch (status) {
+    case "idle":
+      return "idle";
+    case "connecting":
+      return "connecting";
+    case "live":
+      return "gemini live";
+    case "text-fallback":
+      return "text fallback";
+    case "unavailable":
+      return "unavailable";
+    case "closed":
+      return "closed";
+  }
+}
+
+function voiceStatusTone(status: VoiceStatus) {
+  switch (status) {
+    case "live":
+      return "good";
+    case "connecting":
+    case "text-fallback":
+      return "warning";
+    case "unavailable":
+    case "closed":
+      return "ended";
+    case "idle":
+      return "neutral";
+  }
+}
+
+function formatMicStatus(status: MicStatus) {
+  switch (status) {
+    case "idle":
+      return "idle";
+    case "requesting":
+      return "requesting";
+    case "granted":
+      return "ready";
+    case "unavailable":
+      return "unavailable";
+    case "stopped":
+      return "stopped";
+  }
+}
+
+function micStatusTone(status: MicStatus) {
+  switch (status) {
+    case "granted":
+      return "good";
+    case "requesting":
+      return "warning";
+    case "unavailable":
+    case "stopped":
+      return "ended";
+    case "idle":
+      return "neutral";
   }
 }
 
