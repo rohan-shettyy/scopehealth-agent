@@ -82,6 +82,7 @@ export default function Home() {
   const [refillRequest, setRefillRequest] =
     useState<TranscriptResponse["refillRequest"]>();
   const [input, setInput] = useState("");
+  const [smsInput, setSmsInput] = useState("");
   const [callStatus, setCallStatus] = useState<CallStatus>("idle");
   const [isMuted, setIsMuted] = useState(false);
   const [audioNotice, setAudioNotice] = useState("Microphone idle");
@@ -113,6 +114,14 @@ export default function Home() {
     session?.state.channel === "call" &&
     session.state.status === "active" &&
     !isBusy;
+  const canSendSms =
+    session?.state.channel === "sms" &&
+    session.state.status === "active" &&
+    !isBusy;
+  const smsMessages = useMemo(
+    () => getSmsThreadMessages(messages, session?.state.channel === "sms"),
+    [messages, session?.state.channel]
+  );
 
   const workflowSummary = useMemo(() => {
     if (!session) {
@@ -221,19 +230,44 @@ export default function Home() {
       return;
     }
 
+    const sessionId = session.id;
     setError(null);
     setCallStatus("thinking");
+    setAudioNotice("Disconnecting call");
 
     try {
-      const data = await postJson<TranscriptResponse>("/api/workflow/call/hangup", {
-        sessionId: session.id
-      });
       await stopAudioCapture();
+      const data = await postJson<TranscriptResponse>("/api/workflow/call/hangup", {
+        sessionId
+      });
       applyTranscript(data);
       setCallStatus("ended");
-      setAudioNotice("Call ended");
+      setAudioNotice("Call ended; SMS fallback active");
     } catch (caughtError) {
-      setCallStatus("connected");
+      setCallStatus("ended");
+      setError(formatError(caughtError));
+    }
+  }
+
+  async function submitSms(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!session || !smsInput.trim()) {
+      return;
+    }
+
+    setError(null);
+
+    try {
+      const data = await postJson<TurnResponse>("/api/workflow/sms/reply", {
+        sessionId: session.id,
+        text: smsInput.trim()
+      });
+      setSmsInput("");
+      setSession(data.session);
+      setRefillRequest(data.refillRequest);
+      await refreshSession(data.session.id, { quiet: true });
+    } catch (caughtError) {
       setError(formatError(caughtError));
     }
   }
@@ -563,7 +597,7 @@ export default function Home() {
                 className="secondary-button"
                 type="button"
                 onClick={hangUp}
-                disabled={!session || session.state.channel !== "call" || isBusy}
+                disabled={!session || session.state.channel !== "call"}
               >
                 Hang up
               </button>
@@ -682,9 +716,40 @@ export default function Home() {
             </div>
             <p>
               {session?.state.channel === "sms"
-                ? "The call has moved to SMS continuation on the backend. This task does not add SMS reply controls."
+                ? "The call has moved to SMS continuation. Continue the same refill without repeating completed steps."
                 : "SMS remains text/template-first. This panel stays inactive until fallback is triggered."}
             </p>
+            <div className="sms-thread" aria-label="SMS continuation thread">
+              {smsMessages.length > 0 ? (
+                smsMessages.map((message) => (
+                  <article
+                    className={`sms-bubble sms-${message.role}`}
+                    key={message.id}
+                  >
+                    <span>{formatRole(message.role)}</span>
+                    <p>{message.content}</p>
+                  </article>
+                ))
+              ) : (
+                <p className="sms-empty">
+                  Hang up before completion to generate the first SMS continuation.
+                </p>
+              )}
+            </div>
+            <form className="sms-form" onSubmit={submitSms}>
+              <input
+                aria-label="Patient SMS reply"
+                placeholder={
+                  canSendSms ? "Reply by SMS..." : "SMS activates after hang-up"
+                }
+                value={smsInput}
+                onChange={(event) => setSmsInput(event.target.value)}
+                disabled={!canSendSms}
+              />
+              <button type="submit" disabled={!canSendSms || !smsInput.trim()}>
+                Send
+              </button>
+            </form>
           </div>
         </aside>
       </section>
@@ -760,6 +825,23 @@ function formatCallStatus(status: CallStatus) {
     case "ended":
       return "ended";
   }
+}
+
+function getSmsThreadMessages(
+  messages: TranscriptMessage[],
+  smsActive: boolean
+) {
+  const fallbackIndex = messages.findIndex(
+    (message) =>
+      message.role === "system" &&
+      message.content.includes("SMS fallback activated")
+  );
+  const threadMessages =
+    fallbackIndex >= 0 ? messages.slice(fallbackIndex + 1) : smsActive ? messages : [];
+
+  return threadMessages.filter(
+    (message) => message.role === "assistant" || message.role === "user"
+  );
 }
 
 function formatError(error: unknown) {

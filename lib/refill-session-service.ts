@@ -170,6 +170,11 @@ export async function hangUpCall(sessionId: number): Promise<SessionTranscript> 
     return fetchSessionTranscript(sessionId);
   }
 
+  await appendConversationMessage({
+    sessionId,
+    role: "system",
+    content: "Call disconnected; SMS fallback activated."
+  });
   await endCallSession(sessionId);
   await closeCallVoiceSession(sessionId);
   return triggerSmsFallback(sessionId);
@@ -192,7 +197,7 @@ export async function triggerSmsFallback(
   const context = await loadDemoPatientWorkflowContext();
   const agentReply = getContinuationPrompt(session.state, context);
 
-  if (!hasMessage(transcript, agentReply)) {
+  if (!hasMessage(await fetchSessionTranscript(sessionId), agentReply)) {
     await appendConversationMessage({
       sessionId,
       role: "assistant",
@@ -312,22 +317,28 @@ function getContinuationPrompt(
   const medication = state.selectedMedication
     ? `${state.selectedMedication.medicationName} ${state.selectedMedication.strength}`
     : undefined;
+  const pharmacy = state.selectedPharmacy
+    ? formatPharmacyForMessage(state.selectedPharmacy)
+    : undefined;
+  const copay = state.copayAmountCents !== undefined
+    ? formatCurrencyForMessage(state.copayAmountCents)
+    : undefined;
 
   switch (getNextMissingStep(state)) {
     case "verify_dob":
-      return "We got disconnected. To continue Sarah Chen's refill, please reply with her date of birth.";
+      return "Looks like we got disconnected. To continue Sarah Chen's refill, please reply with her date of birth.";
     case "select_medication":
-      return `We got disconnected. Which medication would you like to refill? ${context.activePrescriptions
+      return `Looks like we got disconnected. Which medication would you like to refill? ${context.activePrescriptions
         .map((option) => `${option.medicationName} ${option.strength}`)
         .join(", ")}.`;
     case "confirm_pharmacy":
-      return `We got disconnected. Should I send ${medication ?? "the refill"} to ${context.pharmacyOnFile.name}, ${context.pharmacyOnFile.addressLine1}?`;
+      return `Looks like we got disconnected. I have your ${medication ?? "refill"} started. Should I send it to ${context.pharmacyOnFile.name}, ${context.pharmacyOnFile.addressLine1}?`;
     case "verify_insurance":
-      return `We got disconnected. Is your ${context.insurancePolicy.payerName} ${context.insurancePolicy.planName} insurance still current${medication ? ` for ${medication}` : ""}?`;
+      return `Looks like we got disconnected. I have ${medication ?? "the refill"} set for ${pharmacy ?? formatPharmacyForMessage(context.pharmacyOnFile)}. Is your ${context.insurancePolicy.payerName} ${context.insurancePolicy.planName} insurance still current?`;
     case "notify_copay":
-      return `We got disconnected. Reply anything when you are ready and I will send the copay${medication ? ` for ${medication}` : ""}.`;
+      return `Looks like we got disconnected. Reply anything when you are ready and I will send the copay${medication ? ` for ${medication}` : ""}.`;
     case "complete_refill":
-      return `We got disconnected. Reply to complete the refill${medication ? ` for ${medication}` : ""}.`;
+      return `Thanks. ${copay && medication ? `Your copay for ${medication} is ${copay}. ` : ""}Reply YES to finish your refill request${pharmacy ? ` with ${pharmacy}` : ""}.`;
   }
 }
 
@@ -521,4 +532,17 @@ function getPatientAudioTranscriptEvents(events: VoiceLiveEvent[]) {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
+}
+
+function formatPharmacyForMessage(pharmacy: {
+  name: string;
+  addressLine1?: string;
+}) {
+  return pharmacy.addressLine1
+    ? `${pharmacy.name}, ${pharmacy.addressLine1}`
+    : pharmacy.name;
+}
+
+function formatCurrencyForMessage(amountCents: number) {
+  return `$${(amountCents / 100).toFixed(2).replace(/\.00$/, "")}`;
 }

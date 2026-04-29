@@ -374,6 +374,82 @@ input:disabled {
   margin: 10px 0 0;
 }
 
+.sms-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.sms-bubble {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 92%;
+  padding: 10px 12px;
+}
+
+.sms-bubble span {
+  color: var(--muted);
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.sms-bubble p,
+.sms-empty {
+  margin: 6px 0 0;
+}
+
+.sms-assistant {
+  align-self: flex-start;
+  background: white;
+  color: var(--foreground);
+}
+
+.sms-user {
+  align-self: flex-end;
+  background: #e8f5f3;
+  border-color: #b7dcd7;
+  color: var(--foreground);
+}
+
+.sms-form {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-top: 14px;
+}
+
+.sms-form input {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  min-height: 40px;
+  min-width: 0;
+  padding: 0 10px;
+}
+
+.sms-form input:focus {
+  border-color: var(--accent);
+  outline: 2px solid rgba(19, 122, 114, 0.18);
+}
+
+.sms-form button {
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: white;
+  font-weight: 700;
+  min-height: 40px;
+  padding: 0 12px;
+}
+
+.sms-form button:not(:disabled):hover {
+  background: var(--accent-strong);
+}
+
 @keyframes pulse {
   0%,
   80%,
