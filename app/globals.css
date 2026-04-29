@@ -360,6 +360,43 @@ input:disabled {
   overflow-wrap: anywhere;
 }
 
+.refill-summary {
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 18px;
+  padding: 16px;
+}
+
+.refill-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.refill-list div {
+  display: grid;
+  gap: 4px;
+}
+
+.refill-list dt {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.refill-list dd,
+.refill-empty {
+  line-height: 1.4;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.refill-empty {
+  color: var(--muted);
+}
+
 .sms-panel {
   background: var(--surface-soft);
   border: 1px dashed var(--border);

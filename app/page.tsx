@@ -40,11 +40,26 @@ interface SessionSnapshot {
 interface TranscriptResponse {
   session: SessionSnapshot;
   messages: TranscriptMessage[];
-  refillRequest?: {
-    id: number;
-    status: string;
-  };
+  refillRequest?: RefillRequestSnapshot;
   voiceEvents?: VoiceEvent[];
+}
+
+interface RefillRequestSnapshot {
+  id: number;
+  patientId: number;
+  prescriptionId?: number;
+  pharmacyId?: number;
+  alternatePharmacy?: string;
+  insurancePolicyId?: number;
+  status: string;
+  identityVerified: boolean;
+  verifiedAt?: string;
+  insuranceVerified: boolean;
+  copayAmountCents?: number;
+  lastCompletedStep?: string;
+  nextExpectedStep?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface VoiceEvent {
@@ -59,10 +74,7 @@ interface TurnResponse {
   session: SessionSnapshot;
   agentReply: string;
   isComplete: boolean;
-  refillRequest?: {
-    id: number;
-    status: string;
-  };
+  refillRequest?: RefillRequestSnapshot;
   voiceEvents?: VoiceEvent[];
 }
 
@@ -267,6 +279,10 @@ export default function Home() {
       setSession(data.session);
       setRefillRequest(data.refillRequest);
       await refreshSession(data.session.id, { quiet: true });
+      if (data.session.state.status === "completed") {
+        setCallStatus("ended");
+        setAudioNotice("Refill completed by SMS");
+      }
     } catch (caughtError) {
       setError(formatError(caughtError));
     }
@@ -705,6 +721,55 @@ export default function Home() {
             </div>
           </dl>
 
+          <section className="refill-summary" aria-label="Completed refill request">
+            <p className="panel-kicker">Refill request</p>
+            {refillRequest ? (
+              <dl className="refill-list">
+                <div>
+                  <dt>ID</dt>
+                  <dd>#{refillRequest.id}</dd>
+                </div>
+                <div>
+                  <dt>Status</dt>
+                  <dd>{refillRequest.status.toLowerCase()}</dd>
+                </div>
+                <div>
+                  <dt>Prescription</dt>
+                  <dd>
+                    {session?.state.selectedMedication
+                      ? `${session.state.selectedMedication.medicationName} ${session.state.selectedMedication.strength}`
+                      : refillRequest.prescriptionId
+                        ? `Prescription #${refillRequest.prescriptionId}`
+                        : "Not recorded"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Pharmacy</dt>
+                  <dd>
+                    {session?.state.selectedPharmacy
+                      ? formatPharmacy(session.state.selectedPharmacy)
+                      : refillRequest.alternatePharmacy ??
+                        (refillRequest.pharmacyId
+                          ? `Pharmacy #${refillRequest.pharmacyId}`
+                          : "Not recorded")}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Copay</dt>
+                  <dd>
+                    {refillRequest.copayAmountCents !== undefined
+                      ? formatCurrency(refillRequest.copayAmountCents)
+                      : "Not recorded"}
+                  </dd>
+                </div>
+              </dl>
+            ) : (
+              <p className="refill-empty">
+                No completed refill request yet.
+              </p>
+            )}
+          </section>
+
           <div className="sms-panel">
             <div>
               <p className="panel-kicker">SMS mode</p>
@@ -842,6 +907,19 @@ function getSmsThreadMessages(
   return threadMessages.filter(
     (message) => message.role === "assistant" || message.role === "user"
   );
+}
+
+function formatPharmacy(pharmacy: {
+  name: string;
+  addressLine1?: string;
+}) {
+  return pharmacy.addressLine1
+    ? `${pharmacy.name}, ${pharmacy.addressLine1}`
+    : pharmacy.name;
+}
+
+function formatCurrency(amountCents: number) {
+  return `$${(amountCents / 100).toFixed(2).replace(/\.00$/, "")}`;
 }
 
 function formatError(error: unknown) {
