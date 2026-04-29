@@ -432,8 +432,17 @@ input:disabled {
   background: white;
   border-bottom: 1px solid var(--border);
   display: flex;
+  gap: 14px;
   justify-content: space-between;
   padding: 16px 18px;
+}
+
+.sms-header-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .primary-sms-thread {

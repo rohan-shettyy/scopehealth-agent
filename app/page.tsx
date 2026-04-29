@@ -366,6 +366,43 @@ export default function Home() {
     }
   }
 
+  async function resetCall() {
+    const sessionId = session?.id;
+
+    setError(null);
+    setAudioNotice("Resetting demo call");
+    setCallStatus("thinking");
+
+    try {
+      await stopAudioCapture();
+
+      if (playbackContextRef.current?.state !== "closed") {
+        await playbackContextRef.current?.close();
+      }
+      playbackContextRef.current = null;
+
+      if (sessionId) {
+        await postJson<{ reset: true }>("/api/workflow/call/reset", {
+          sessionId
+        });
+      }
+    } catch (caughtError) {
+      setError(`Reset cleanup warning: ${formatError(caughtError)}`);
+    } finally {
+      window.localStorage.removeItem("refill-demo-session-id");
+      setSession(null);
+      setMessages([]);
+      setRefillRequest(undefined);
+      setInput("");
+      setSmsInput("");
+      setIsMuted(false);
+      setCallStatus("idle");
+      setMicStatus("idle");
+      setVoiceStatus("idle");
+      setAudioNotice("Microphone idle");
+    }
+  }
+
   async function submitSms(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -767,6 +804,14 @@ export default function Home() {
                 >
                   Hang up
                 </button>
+                <button
+                  className="call-control"
+                  type="button"
+                  onClick={resetCall}
+                  disabled={!session && callStatus === "idle"}
+                >
+                  New session
+                </button>
               </div>
 
               <div className="call-pill-row">
@@ -839,10 +884,19 @@ export default function Home() {
                   <h2>Sarah Chen</h2>
                   <p className="target-subtitle">Prescription refill SMS</p>
                 </div>
-                <StatusBadge
-                  label={session?.state.status === "completed" ? "refill completed" : "sms active"}
-                  tone={session?.state.status === "completed" ? "good" : "connected"}
-                />
+                <div className="sms-header-actions">
+                  <StatusBadge
+                    label={session?.state.status === "completed" ? "refill completed" : "sms active"}
+                    tone={session?.state.status === "completed" ? "good" : "connected"}
+                  />
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={resetCall}
+                  >
+                    Call again
+                  </button>
+                </div>
               </div>
 
               <div className="sms-thread primary-sms-thread" aria-label="SMS continuation thread">

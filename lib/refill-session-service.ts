@@ -180,6 +180,25 @@ export async function hangUpCall(sessionId: number): Promise<SessionTranscript> 
   return triggerSmsFallback(sessionId);
 }
 
+export async function resetSimulatedCall(sessionId: number): Promise<{ reset: true }> {
+  const transcript = await fetchSessionTranscript(sessionId);
+
+  if (
+    transcript.session.state.channel === "call" &&
+    transcript.session.state.status === "active"
+  ) {
+    await appendConversationMessage({
+      sessionId,
+      role: "system",
+      content: "Demo call reset; abandoning this session without SMS fallback."
+    });
+    await endCallSession(sessionId);
+    await closeCallVoiceSession(sessionId);
+  }
+
+  return { reset: true };
+}
+
 export async function triggerSmsFallback(
   sessionId: number
 ): Promise<SessionTranscript> {
