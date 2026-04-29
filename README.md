@@ -82,6 +82,10 @@ Running `npm run seed` creates or updates:
 - Insurance policy: Aetna PPO, Member ID `ANT-88912`
 - Refill request: draft state with `nextExpectedStep` set to `verify_identity`
 
+## Persistence Layer
+
+The server-side persistence helpers live in `lib/refill-persistence.ts`. They load the demo patient context, create and update conversation sessions, append transcript messages, switch call sessions to SMS, end call sessions, create refill requests after workflow completion, and fetch a full session snapshot for future UI/debug panels.
+
 ## Project Structure
 
 ```text
@@ -91,6 +95,7 @@ Running `npm run seed` creates or updates:
 │   ├── layout.tsx
 │   └── page.tsx
 ├── lib/
+│   ├── refill-persistence.ts
 │   └── prisma.ts
 ├── prisma/
 │   ├── ensure-sqlite-db.ts

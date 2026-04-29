@@ -95,6 +95,7 @@ model RefillRequest {
   patientId           Int
   prescriptionId      Int?
   pharmacyId          Int?
+  alternatePharmacy   String?
   insurancePolicyId   Int?
   status              RefillRequestStatus  @default(DRAFT)
   identityVerified    Boolean              @default(false)
@@ -118,11 +119,12 @@ model ConversationSession {
   patientId            Int?
   refillRequestId      Int?                      @unique
   channel              ConversationChannel
-  status               ConversationSessionStatus @default(OPEN)
+  status               ConversationSessionStatus @default(ACTIVE)
   identityVerified     Boolean                   @default(false)
   verifiedAt           DateTime?
   selectedMedicationId Int?
   selectedPharmacyId   Int?
+  alternatePharmacy    String?
   insuranceVerified    Boolean                   @default(false)
   copayAmountCents     Int?
   lastCompletedStep    String?
@@ -162,15 +164,14 @@ enum RefillRequestStatus {
 }
 
 enum ConversationChannel {
-  VOICE
-  WEB
-  TEST
+  CALL
+  SMS
 }
 
 enum ConversationSessionStatus {
-  OPEN
+  ACTIVE
+  ENDED
   COMPLETED
-  ABANDONED
 }
 
 enum MessageRole {
