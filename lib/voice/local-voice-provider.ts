@@ -1,6 +1,7 @@
 import type {
   VoiceLiveEvent,
   VoiceAudioInput,
+  VoiceAudioTurnResult,
   VoiceProvider,
   VoiceSession,
   VoiceSessionStartInput,
@@ -51,6 +52,23 @@ export class LocalVoiceProvider implements VoiceProvider {
 
   async sendAudioChunk(_input: VoiceAudioInput): Promise<void> {
     return undefined;
+  }
+
+  async endAudioTurn(sessionId: number): Promise<VoiceAudioTurnResult> {
+    const event: VoiceLiveEvent = {
+      sessionId,
+      provider: "local-fallback",
+      type: "error",
+      text: "Browser audio capture is active, but Gemini Live is disabled. Use text input or enable Gemini Live to transcribe microphone audio.",
+      raw: "Gemini Live disabled",
+      createdAt: new Date().toISOString()
+    };
+
+    eventsBySession.get(sessionId)?.push(event);
+
+    return {
+      events: [event]
+    };
   }
 
   async getEvents(sessionId: number): Promise<VoiceLiveEvent[]> {

@@ -56,10 +56,16 @@ export interface VoiceTurnResult {
   events: VoiceLiveEvent[];
 }
 
+export interface VoiceAudioTurnResult {
+  transcriptText?: string;
+  events: VoiceLiveEvent[];
+}
+
 export interface VoiceProvider {
   createSession(input: VoiceSessionStartInput): Promise<VoiceSession>;
   sendUserTurn(input: VoiceTurnInput): Promise<VoiceTurnResult>;
   sendAudioChunk(input: VoiceAudioInput): Promise<void>;
+  endAudioTurn(sessionId: number): Promise<VoiceAudioTurnResult>;
   getEvents(sessionId: number): Promise<VoiceLiveEvent[]>;
   closeSession(sessionId: number): Promise<VoiceLiveEvent[]>;
 }

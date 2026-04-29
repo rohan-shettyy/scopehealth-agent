@@ -99,12 +99,22 @@ The local demo exposes JSON-only route handlers for simulated call and SMS flows
 
 Call-mode replies go through the server-owned voice provider boundary in `lib/voice`. When Gemini Live is enabled, the backend opens a Gemini Live WebSocket session and can surface transcription, model text, model audio, and tool-call events on call input responses as `voiceEvents`. SMS mode does not use Gemini.
 
+For browser voice simulation, the call panel captures microphone audio, converts it to raw little-endian PCM16 mono at 16kHz, and streams chunks to the backend as `audio/pcm;rate=16000`. Gemini Live audio output is expected as PCM audio and is played in the browser at the MIME type's declared sample rate, usually 24kHz.
+
 - `POST /api/workflow/call/start`
   - Body: none
   - Response: `{ session, messages, refillRequest? }`
 - `POST /api/workflow/call/input`
   - Body: `{ "sessionId": number, "text": string }`
   - Response: `{ session, agentReply, isComplete, refillRequest?, voiceEvents? }`
+- `POST /api/workflow/call/audio`
+  - Body: `{ "sessionId": number, "audioBase64": string, "mimeType": "audio/pcm;rate=16000" }`
+  - Response: `{ voiceEvents }`
+- `POST /api/workflow/call/audio/end`
+  - Body: `{ "sessionId": number }`
+  - Response: `{ session, agentReply, isComplete, refillRequest?, voiceEvents? }`
+- `GET /api/workflow/call/events/:sessionId`
+  - Response: `{ voiceEvents }`
 - `POST /api/workflow/call/hangup`
   - Body: `{ "sessionId": number }`
   - Response: `{ session, messages, refillRequest? }`

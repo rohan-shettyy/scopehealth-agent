@@ -58,10 +58,22 @@ interface TurnResponse {
     type: string;
     provider: string;
     text?: string;
+    audioBase64?: string;
+    mimeType?: string;
   }>;
 }
 
-type CallStatus = "idle" | "connecting" | "connected" | "thinking" | "ended";
+type VoiceEvent = NonNullable<TurnResponse["voiceEvents"]>[number];
+
+type CallStatus =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "listening"
+  | "processing"
+  | "speaking"
+  | "thinking"
+  | "ended";
 
 export default function Home() {
   const [session, setSession] = useState<SessionSnapshot | null>(null);
@@ -70,10 +82,27 @@ export default function Home() {
     useState<TranscriptResponse["refillRequest"]>();
   const [input, setInput] = useState("");
   const [callStatus, setCallStatus] = useState<CallStatus>("idle");
+  const [isMuted, setIsMuted] = useState(false);
+  const [audioNotice, setAudioNotice] = useState("Microphone idle");
   const [error, setError] = useState<string | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const activeSessionIdRef = useRef<number | null>(null);
+  const mutedRef = useRef(false);
+  const processingAudioRef = useRef(false);
+  const hasSpeechRef = useRef(false);
+  const silenceStartedAtRef = useRef<number | null>(null);
+  const lastAudioPostAtRef = useRef(0);
+  const playbackSourcesRef = useRef<AudioBufferSourceNode[]>([]);
 
-  const isBusy = callStatus === "connecting" || callStatus === "thinking";
+  const isBusy =
+    callStatus === "connecting" ||
+    callStatus === "thinking" ||
+    callStatus === "processing" ||
+    callStatus === "speaking";
   const canSend =
     session?.state.channel === "call" &&
     session.state.status === "active" &&
@@ -118,15 +147,36 @@ export default function Home() {
     return () => window.clearInterval(interval);
   }, [session?.id, session?.state.status]);
 
+  useEffect(() => {
+    mutedRef.current = isMuted;
+  }, [isMuted]);
+
+  useEffect(() => {
+    return () => {
+      void stopAudioCapture();
+    };
+  }, []);
+
   async function startCall() {
     setError(null);
     setCallStatus("connecting");
 
     try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
       const data = await postJson<TranscriptResponse>("/api/workflow/call/start");
       applyTranscript(data);
-      setCallStatus("connected");
+      await startAudioCapture(data.session.id, mediaStream);
+      setCallStatus("listening");
+      setAudioNotice("Listening for patient speech");
     } catch (caughtError) {
+      await stopAudioCapture();
       setCallStatus("idle");
       setError(formatError(caughtError));
     }
@@ -151,6 +201,7 @@ export default function Home() {
       setSession(data.session);
       setRefillRequest(data.refillRequest);
       await refreshSession(data.session.id, { quiet: true });
+      await playModelAudio(data.voiceEvents ?? []);
       setCallStatus(data.session.state.status === "completed" ? "ended" : "connected");
     } catch (caughtError) {
       setCallStatus("connected");
@@ -170,8 +221,10 @@ export default function Home() {
       const data = await postJson<TranscriptResponse>("/api/workflow/call/hangup", {
         sessionId: session.id
       });
+      await stopAudioCapture();
       applyTranscript(data);
       setCallStatus("ended");
+      setAudioNotice("Call ended");
     } catch (caughtError) {
       setCallStatus("connected");
       setError(formatError(caughtError));
@@ -208,6 +261,187 @@ export default function Home() {
     }
   }
 
+  async function startAudioCapture(sessionId: number, mediaStream: MediaStream) {
+    await stopAudioCapture();
+
+    const audioContext = new AudioContext();
+    const source = audioContext.createMediaStreamSource(mediaStream);
+    const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+    activeSessionIdRef.current = sessionId;
+    audioContextRef.current = audioContext;
+    mediaStreamRef.current = mediaStream;
+    sourceRef.current = source;
+    processorRef.current = processor;
+    processingAudioRef.current = false;
+    hasSpeechRef.current = false;
+    silenceStartedAtRef.current = null;
+
+    processor.onaudioprocess = (event) => {
+      if (
+        !activeSessionIdRef.current ||
+        mutedRef.current ||
+        processingAudioRef.current
+      ) {
+        return;
+      }
+
+      const inputBuffer = event.inputBuffer.getChannelData(0);
+      const rms = getRms(inputBuffer);
+      const now = Date.now();
+      const speechDetected = rms > 0.018;
+
+      if (speechDetected) {
+        hasSpeechRef.current = true;
+        silenceStartedAtRef.current = null;
+        setCallStatus("listening");
+        setAudioNotice("Listening: speech detected");
+      } else if (hasSpeechRef.current) {
+        silenceStartedAtRef.current ??= now;
+
+        if (now - silenceStartedAtRef.current > 1000) {
+          void finishAudioTurn();
+          return;
+        }
+      }
+
+      if (now - lastAudioPostAtRef.current < 120) {
+        return;
+      }
+
+      lastAudioPostAtRef.current = now;
+
+      const pcm = convertFloat32ToPcm16(
+        inputBuffer,
+        audioContext.sampleRate,
+        16000
+      );
+
+      if (pcm.length > 0) {
+        void postJson("/api/workflow/call/audio", {
+          sessionId: activeSessionIdRef.current,
+          audioBase64: int16ToBase64(pcm),
+          mimeType: "audio/pcm;rate=16000"
+        }).catch((caughtError) => {
+          setError(formatError(caughtError));
+        });
+      }
+    };
+
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+  }
+
+  async function finishAudioTurn() {
+    const sessionId = activeSessionIdRef.current;
+
+    if (!sessionId || processingAudioRef.current || !hasSpeechRef.current) {
+      return;
+    }
+
+    processingAudioRef.current = true;
+    hasSpeechRef.current = false;
+    silenceStartedAtRef.current = null;
+    setCallStatus("processing");
+    setAudioNotice("Processing speech");
+
+    try {
+      const data = await postJson<TurnResponse>("/api/workflow/call/audio/end", {
+        sessionId
+      });
+
+      setSession(data.session);
+      setRefillRequest(data.refillRequest);
+      await refreshSession(data.session.id, { quiet: true });
+      await playModelAudio(data.voiceEvents ?? []);
+      setCallStatus(data.session.state.status === "completed" ? "ended" : "listening");
+      setAudioNotice(
+        data.session.state.status === "completed"
+          ? "Workflow completed"
+          : "Listening for patient speech"
+      );
+    } catch (caughtError) {
+      setCallStatus("listening");
+      setAudioNotice("Listening for patient speech");
+      setError(formatError(caughtError));
+    } finally {
+      processingAudioRef.current = false;
+    }
+  }
+
+  async function stopAudioCapture() {
+    processingAudioRef.current = false;
+    activeSessionIdRef.current = null;
+    hasSpeechRef.current = false;
+    silenceStartedAtRef.current = null;
+
+    processorRef.current?.disconnect();
+    sourceRef.current?.disconnect();
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+
+    for (const source of playbackSourcesRef.current) {
+      try {
+        source.stop();
+      } catch {
+        // Ignore already-ended playback sources.
+      }
+    }
+
+    playbackSourcesRef.current = [];
+
+    if (audioContextRef.current?.state !== "closed") {
+      await audioContextRef.current?.close();
+    }
+
+    processorRef.current = null;
+    sourceRef.current = null;
+    mediaStreamRef.current = null;
+    audioContextRef.current = null;
+  }
+
+  async function playModelAudio(events: VoiceEvent[]) {
+    const audioEvents = events.filter(
+      (event) => event.type === "model_audio" && event.audioBase64
+    );
+
+    if (audioEvents.length === 0) {
+      return;
+    }
+
+    const audioContext = audioContextRef.current ?? new AudioContext();
+    audioContextRef.current = audioContext;
+    let startTime = Math.max(audioContext.currentTime, audioContext.currentTime + 0.05);
+
+    setCallStatus("speaking");
+    setAudioNotice("Agent speaking");
+
+    for (const event of audioEvents) {
+      const sampleRate = getPcmRate(event.mimeType) ?? 24000;
+      const samples = base64ToInt16(event.audioBase64 ?? "");
+      const audioBuffer = audioContext.createBuffer(
+        1,
+        samples.length,
+        sampleRate
+      );
+      const channelData = audioBuffer.getChannelData(0);
+
+      for (let index = 0; index < samples.length; index += 1) {
+        channelData[index] = samples[index] / 32768;
+      }
+
+      const source = audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioContext.destination);
+      source.start(startTime);
+      playbackSourcesRef.current.push(source);
+      startTime += audioBuffer.duration;
+    }
+
+    await new Promise((resolve) => {
+      window.setTimeout(resolve, Math.max((startTime - audioContext.currentTime) * 1000, 0));
+    });
+  }
+
   return (
     <main className="demo-shell">
       <header className="app-header">
@@ -233,6 +467,14 @@ export default function Home() {
             </div>
             <div className="panel-actions">
               <button
+                className="secondary-button"
+                type="button"
+                onClick={() => setIsMuted((value) => !value)}
+                disabled={!session || session.state.status !== "active"}
+              >
+                {isMuted ? "Unmute" : "Mute"}
+              </button>
+              <button
                 className="primary-button"
                 type="button"
                 onClick={startCall}
@@ -252,6 +494,7 @@ export default function Home() {
           </div>
 
           <div className="state-strip" aria-label="Workflow status">
+            <StatusBadge label={audioNotice} tone={isMuted ? "warning" : "neutral"} />
             <StatusBadge
               label={session?.state.identityVerified ? "verified" : "not verified"}
               tone={session?.state.identityVerified ? "good" : "warning"}
@@ -429,6 +672,12 @@ function formatCallStatus(status: CallStatus) {
       return "connecting";
     case "connected":
       return "connected";
+    case "listening":
+      return "listening";
+    case "processing":
+      return "processing speech";
+    case "speaking":
+      return "agent speaking";
     case "thinking":
       return "agent responding";
     case "ended":
@@ -438,4 +687,60 @@ function formatCallStatus(status: CallStatus) {
 
 function formatError(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected error";
+}
+
+function getRms(samples: Float32Array) {
+  let sum = 0;
+
+  for (const sample of samples) {
+    sum += sample * sample;
+  }
+
+  return Math.sqrt(sum / samples.length);
+}
+
+function convertFloat32ToPcm16(
+  samples: Float32Array,
+  sourceRate: number,
+  targetRate: number
+) {
+  const ratio = sourceRate / targetRate;
+  const length = Math.floor(samples.length / ratio);
+  const pcm = new Int16Array(length);
+
+  for (let index = 0; index < length; index += 1) {
+    const sourceIndex = Math.floor(index * ratio);
+    const sample = Math.max(-1, Math.min(1, samples[sourceIndex] ?? 0));
+    pcm[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+
+  return pcm;
+}
+
+function int16ToBase64(samples: Int16Array) {
+  const bytes = new Uint8Array(samples.buffer);
+  let binary = "";
+
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return window.btoa(binary);
+}
+
+function base64ToInt16(base64: string) {
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return new Int16Array(bytes.buffer);
+}
+
+function getPcmRate(mimeType?: string) {
+  const match = mimeType?.match(/rate=(\d+)/);
+
+  return match ? Number(match[1]) : undefined;
 }

@@ -50,6 +50,54 @@ export async function submitCallInput(
   return submitWorkflowInput(sessionId, text, "call");
 }
 
+export async function streamCallAudioChunk(input: {
+  sessionId: number;
+  audioBase64: string;
+  mimeType: string;
+}): Promise<{ voiceEvents: VoiceLiveEvent[] }> {
+  const transcript = await fetchSessionTranscript(input.sessionId);
+
+  if (
+    transcript.session.state.channel !== "call" ||
+    transcript.session.state.status !== "active"
+  ) {
+    throw new Error("Call session is not active");
+  }
+
+  await getCallVoiceProvider().sendAudioChunk(input);
+
+  return {
+    voiceEvents: await getCallVoiceProvider().getEvents(input.sessionId)
+  };
+}
+
+export async function finishCallAudioTurn(
+  sessionId: number
+): Promise<WorkflowInteractionResult> {
+  const audioResult = await getCallVoiceProvider().endAudioTurn(sessionId);
+  const transcriptText = audioResult.transcriptText?.trim();
+
+  if (!transcriptText) {
+    await persistVoiceEvents(sessionId, audioResult.events);
+    throw new Error("No speech transcription was returned for this audio turn");
+  }
+
+  const workflowResult = await submitCallInput(sessionId, transcriptText);
+
+  return {
+    ...workflowResult,
+    voiceEvents: [...audioResult.events, ...(workflowResult.voiceEvents ?? [])]
+  };
+}
+
+export async function getCallVoiceEvents(
+  sessionId: number
+): Promise<{ voiceEvents: VoiceLiveEvent[] }> {
+  return {
+    voiceEvents: await getCallVoiceProvider().getEvents(sessionId)
+  };
+}
+
 export async function submitSmsReply(
   sessionId: number,
   text: string
@@ -259,7 +307,7 @@ function hasMessage(transcript: SessionTranscript, content: string): boolean {
 
 async function createCallVoiceSession(sessionId: number) {
   try {
-    await getCallVoiceProvider().createSession({
+    const voiceSession = await getCallVoiceProvider().createSession({
       sessionId,
       systemInstruction: [
         "You are a concise voice assistant for a prescription refill demo.",
@@ -268,6 +316,15 @@ async function createCallVoiceSession(sessionId: number) {
         "Do not invent medical, insurance, pharmacy, or workflow decisions."
       ].join(" ")
     });
+
+    if (voiceSession.provider === "local-fallback") {
+      await appendConversationMessage({
+        sessionId,
+        role: "system",
+        content:
+          "Gemini Live is not enabled for this server process. Text turns still work, but microphone transcription requires ENABLE_GEMINI_LIVE=true and GEMINI_API_KEY."
+      });
+    }
   } catch (error) {
     await appendConversationMessage({
       sessionId,
@@ -332,10 +389,26 @@ async function persistVoiceEvents(
       await appendConversationMessage({
         sessionId,
         role: "system",
-        content: `Voice provider error: ${JSON.stringify(event.raw ?? {})}`
+        content: `Voice provider error: ${formatVoiceEventError(event)}`
       });
     }
   }
+}
+
+function formatVoiceEventError(event: VoiceLiveEvent): string {
+  if (event.text) {
+    return event.text;
+  }
+
+  if (typeof event.raw === "string") {
+    return event.raw;
+  }
+
+  if (event.raw && typeof event.raw === "object") {
+    return JSON.stringify(event.raw);
+  }
+
+  return "Unknown voice provider error";
 }
 
 function formatError(error: unknown): string {

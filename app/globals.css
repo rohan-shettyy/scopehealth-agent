@@ -187,6 +187,8 @@ input:disabled {
 }
 
 .status-connected,
+.status-listening,
+.status-speaking,
 .status-good {
   background: var(--good-bg);
   border-color: #b9e6c9;
@@ -195,6 +197,7 @@ input:disabled {
 
 .status-thinking,
 .status-connecting,
+.status-processing,
 .status-warning {
   background: var(--warning-bg);
   border-color: #f2d393;

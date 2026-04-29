@@ -2,6 +2,7 @@ import { getGeminiLiveConfig, type GeminiLiveConfig } from "@/lib/voice/config";
 import type {
   VoiceLiveEvent,
   VoiceAudioInput,
+  VoiceAudioTurnResult,
   VoiceProvider,
   VoiceSession,
   VoiceSessionStartInput,
@@ -52,9 +53,12 @@ export class GeminiLiveClient implements VoiceProvider {
     connections.set(input.sessionId, connection);
 
     await waitForOpen(socket);
-    socket.addEventListener("message", (message) => {
+    socket.addEventListener("message", async (message) => {
       connection.events.push(
-        ...parseGeminiServerMessage(input.sessionId, message.data)
+        ...parseGeminiServerMessage(
+          input.sessionId,
+          await decodeWebSocketData(message.data)
+        )
       );
     });
     socket.addEventListener("error", () => {
@@ -73,8 +77,15 @@ export class GeminiLiveClient implements VoiceProvider {
         setup: {
           model: `models/${this.config.model}`,
           generationConfig: {
-            responseModalities: ["TEXT"],
-            temperature: 0.4
+            responseModalities: ["AUDIO"],
+            temperature: 0.4,
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: "Aoede"
+                }
+              }
+            }
           },
           systemInstruction: {
             parts: [{ text: input.systemInstruction }]
@@ -152,6 +163,38 @@ export class GeminiLiveClient implements VoiceProvider {
     );
   }
 
+  async endAudioTurn(sessionId: number): Promise<VoiceAudioTurnResult> {
+    const connection = connections.get(sessionId);
+
+    if (!connection || connection.socket.readyState !== WebSocket.OPEN) {
+      throw new Error("Gemini Live session is not open");
+    }
+
+    const eventStart = connection.events.length;
+
+    connection.socket.send(
+      JSON.stringify({
+        realtimeInput: {
+          audioStreamEnd: true
+        }
+      })
+    );
+
+    await waitForAudioTranscriptionOrTimeout(connection, eventStart);
+
+    const events = connection.events.slice(eventStart);
+    const transcriptText = events
+      .filter((event) => event.type === "user_transcript" && event.text)
+      .map((event) => event.text)
+      .join(" ")
+      .trim();
+
+    return {
+      transcriptText: transcriptText || undefined,
+      events
+    };
+  }
+
   async getEvents(sessionId: number): Promise<VoiceLiveEvent[]> {
     return connections.get(sessionId)?.events ?? [];
   }
@@ -192,15 +235,12 @@ function buildTurnPrompt(input: VoiceTurnInput): string {
 
 function parseGeminiServerMessage(
   sessionId: number,
-  data: unknown
+  data: string
 ): VoiceLiveEvent[] {
   let raw: any;
 
   try {
-    raw =
-      typeof data === "string"
-        ? JSON.parse(data)
-        : JSON.parse(Buffer.from(data as ArrayBuffer).toString("utf8"));
+    raw = JSON.parse(data);
   } catch (error) {
     return [
       createEvent(sessionId, "error", {
@@ -210,6 +250,15 @@ function parseGeminiServerMessage(
   }
 
   const events: VoiceLiveEvent[] = [];
+
+  if (raw.error) {
+    events.push(
+      createEvent(sessionId, "error", {
+        text: raw.error.message ?? "Gemini Live returned an error",
+        raw
+      })
+    );
+  }
 
   if (raw.setupComplete) {
     events.push(createEvent(sessionId, "setup_complete", { raw }));
@@ -290,6 +339,26 @@ function parseGeminiServerMessage(
   return events;
 }
 
+async function decodeWebSocketData(data: unknown): Promise<string> {
+  if (typeof data === "string") {
+    return data;
+  }
+
+  if (data instanceof Blob) {
+    return data.text();
+  }
+
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(data).toString("utf8");
+  }
+
+  if (ArrayBuffer.isView(data)) {
+    return Buffer.from(data.buffer).toString("utf8");
+  }
+
+  return String(data);
+}
+
 function createEvent(
   sessionId: number,
   type: VoiceLiveEvent["type"],
@@ -330,16 +399,40 @@ async function waitForTurnComplete(
   );
 }
 
+async function waitForAudioTranscriptionOrTimeout(
+  connection: LiveConnection,
+  eventStart: number
+) {
+  try {
+    await waitForEvent(
+      connection,
+      (event) =>
+        event.type === "user_transcript" || event.type === "turn_complete",
+      eventStart,
+      5000
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 function waitForEvent(
   connection: LiveConnection,
   predicate: (event: VoiceLiveEvent, raw?: any) => boolean,
-  eventStart = 0
+  eventStart = 0,
+  timeoutMs = TURN_TIMEOUT_MS
 ): Promise<void> {
   const startedAt = Date.now();
 
   return new Promise((resolve, reject) => {
     const interval = setInterval(() => {
       for (const event of connection.events.slice(eventStart)) {
+        if (event.type === "error") {
+          clearInterval(interval);
+          reject(new Error(event.text ?? "Gemini Live returned an error"));
+          return;
+        }
+
         if (predicate(event, event.raw)) {
           clearInterval(interval);
           resolve();
@@ -347,7 +440,7 @@ function waitForEvent(
         }
       }
 
-      if (Date.now() - startedAt > TURN_TIMEOUT_MS) {
+      if (Date.now() - startedAt > timeoutMs) {
         clearInterval(interval);
         reject(new Error("Timed out waiting for Gemini Live response"));
       }
