@@ -43,6 +43,7 @@ export interface VoiceTurnInput {
   sessionId: number;
   userText: string;
   deterministicReply: string;
+  instructionPrompt: string;
 }
 
 export interface VoiceAudioInput {

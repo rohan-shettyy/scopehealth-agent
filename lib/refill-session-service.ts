@@ -2,6 +2,11 @@ import { advanceRefillWorkflow } from "@/domain/refill-engine";
 import { normalizeReadableTranscript } from "@/domain/spoken-date";
 import type { RefillSessionState, WorkflowStep } from "@/domain/workflow";
 import {
+  buildCallSystemInstruction,
+  buildCallTurnInstruction,
+  guardCallReply
+} from "@/lib/voice/call-turn-instructions";
+import {
   appendConversationMessage,
   createConversationSession,
   createRefillRequestFromSession,
@@ -39,17 +44,26 @@ export async function startSimulatedCall(): Promise<StartCallResult> {
     "Hi, this is the prescription refill assistant. Please provide Sarah Chen's date of birth to get started.";
 
   await createCallVoiceSession(session.id);
+  const greetingInstruction = buildCallTurnInstruction({
+    state: session.state,
+    context,
+    patientUtterance: "The call just connected.",
+    deterministicReply: agentReply
+  });
   const voiceResult = await phraseCallReply(
     session.id,
     "The call just connected.",
-    agentReply
+    agentReply,
+    greetingInstruction.prompt
   );
+  const guardedReply = guardCallReply(greetingInstruction, voiceResult.replyText);
 
   await appendConversationMessage({
     sessionId: session.id,
     role: "assistant",
-    content: voiceResult.replyText
+    content: guardedReply.replyText
   });
+  await persistGuardrailFallback(session.id, guardedReply);
   await persistVoiceEvents(session.id, voiceResult.events);
 
   return {
@@ -241,7 +255,13 @@ async function submitWorkflowInput(
         };
   const voiceResult =
     expectedChannel === "call"
-      ? await phraseCallReply(sessionId, text, result.agentReply)
+      ? await phraseCallReplyForState(
+          sessionId,
+          text,
+          result.agentReply,
+          result.session.state,
+          context
+        )
       : { replyText: result.agentReply, events: [] };
 
   await appendConversationMessage({
@@ -343,13 +363,7 @@ async function createCallVoiceSession(sessionId: number) {
   try {
     const voiceSession = await getCallVoiceProvider().createSession({
       sessionId,
-      systemInstruction: [
-        "You are a concise voice assistant for a prescription refill demo.",
-        "The deterministic workflow engine controls all refill state.",
-        "When you receive realtime microphone audio, only transcribe it. Do not answer the patient until the server sends a structured text turn with the required reply.",
-        "Only rephrase supplied agent replies for natural phone conversation.",
-        "Do not invent medical, insurance, pharmacy, or workflow decisions."
-      ].join(" ")
+      systemInstruction: buildCallSystemInstruction()
     });
 
     if (voiceSession.provider === "local-fallback") {
@@ -372,13 +386,15 @@ async function createCallVoiceSession(sessionId: number) {
 async function phraseCallReply(
   sessionId: number,
   userText: string,
-  deterministicReply: string
+  deterministicReply: string,
+  instructionPrompt: string
 ) {
   try {
     return await getCallVoiceProvider().sendUserTurn({
       sessionId,
       userText,
-      deterministicReply
+      deterministicReply,
+      instructionPrompt
     });
   } catch (error) {
     await appendConversationMessage({
@@ -392,6 +408,50 @@ async function phraseCallReply(
       events: []
     };
   }
+}
+
+async function phraseCallReplyForState(
+  sessionId: number,
+  userText: string,
+  deterministicReply: string,
+  state: RefillSessionState,
+  context: Awaited<ReturnType<typeof loadDemoPatientWorkflowContext>>
+) {
+  const instruction = buildCallTurnInstruction({
+    state,
+    context,
+    patientUtterance: userText,
+    deterministicReply
+  });
+  const voiceResult = await phraseCallReply(
+    sessionId,
+    userText,
+    deterministicReply,
+    instruction.prompt
+  );
+  const guardedReply = guardCallReply(instruction, voiceResult.replyText);
+
+  await persistGuardrailFallback(sessionId, guardedReply);
+
+  return {
+    ...voiceResult,
+    replyText: guardedReply.replyText
+  };
+}
+
+async function persistGuardrailFallback(
+  sessionId: number,
+  result: ReturnType<typeof guardCallReply>
+) {
+  if (!result.usedFallback) {
+    return;
+  }
+
+  await appendConversationMessage({
+    sessionId,
+    role: "system",
+    content: `Voice model reply overridden by call guardrails: ${result.reason ?? "unspecified"}`
+  });
 }
 
 async function closeCallVoiceSession(sessionId: number) {

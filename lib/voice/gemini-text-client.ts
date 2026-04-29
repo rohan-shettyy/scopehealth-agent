@@ -12,7 +12,8 @@ const GENERATE_CONTENT_BASE =
 export async function rephraseWithGemini(
   systemInstruction: string,
   userText: string,
-  deterministicReply: string
+  deterministicReply: string,
+  instructionPrompt?: string
 ): Promise<string> {
   const config = getGeminiLiveConfig();
 
@@ -33,12 +34,15 @@ export async function rephraseWithGemini(
         parts: [
           {
             text: [
-              "The deterministic refill workflow has already decided the next agent reply.",
-              "Rewrite it naturally for a brief phone conversation.",
-              "Do not ask for information beyond this reply.",
-              "Do not decide workflow state or mention tools.",
-              `Patient said: ${userText}`,
-              `Required reply meaning: ${deterministicReply}`
+              instructionPrompt ??
+                [
+                  "The deterministic refill workflow has already decided the next agent reply.",
+                  "Rewrite it naturally for a brief phone conversation.",
+                  "Do not ask for information beyond this reply.",
+                  "Do not decide workflow state or mention tools.",
+                  `Patient said: ${userText}`,
+                  `Required reply meaning: ${deterministicReply}`
+                ].join("\n")
             ].join("\n")
           }
         ]

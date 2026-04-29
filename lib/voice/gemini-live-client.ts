@@ -1,5 +1,4 @@
 import { getGeminiLiveConfig, type GeminiLiveConfig } from "@/lib/voice/config";
-import { rephraseWithGemini } from "@/lib/voice/gemini-text-client";
 import type {
   VoiceLiveEvent,
   VoiceAudioInput,
@@ -252,14 +251,7 @@ function sendSetup(connection: LiveConnection, systemInstruction: string) {
 }
 
 function buildTurnPrompt(input: VoiceTurnInput): string {
-  return [
-    "The deterministic refill workflow has already decided the next agent reply.",
-    "Rewrite it naturally for a brief phone conversation.",
-    "Do not ask for information beyond this reply.",
-    "Do not decide workflow state or mention tools.",
-    `Patient said: ${input.userText}`,
-    `Required reply meaning: ${input.deterministicReply}`
-  ].join("\n");
+  return input.instructionPrompt;
 }
 
 function parseGeminiServerMessage(
