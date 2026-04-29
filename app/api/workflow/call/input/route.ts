@@ -5,7 +5,7 @@ import { jsonError, requireNumber, requireString } from "@/lib/route-errors";
 
 // POST /api/workflow/call/input
 // Body: { "sessionId": number, "text": string }
-// Response: { session, agentReply, isComplete, refillRequest? }
+// Response: { session, agentReply, isComplete, refillRequest?, voiceEvents? }
 export async function POST(request: Request) {
   try {
     const body = await request.json();

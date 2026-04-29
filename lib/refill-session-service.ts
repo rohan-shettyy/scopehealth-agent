@@ -13,12 +13,15 @@ import {
   type RefillRequestSnapshot,
   type SessionTranscript
 } from "@/lib/refill-persistence";
+import { getCallVoiceProvider } from "@/lib/voice/provider";
+import type { VoiceLiveEvent } from "@/lib/voice/types";
 
 export interface WorkflowInteractionResult {
   session: ConversationSessionSnapshot;
   agentReply: string;
   isComplete: boolean;
   refillRequest?: RefillRequestSnapshot;
+  voiceEvents?: VoiceLiveEvent[];
 }
 
 export async function startSimulatedCall(): Promise<SessionTranscript> {
@@ -35,6 +38,7 @@ export async function startSimulatedCall(): Promise<SessionTranscript> {
     role: "assistant",
     content: agentReply
   });
+  await createCallVoiceSession(session.id);
 
   return fetchSessionTranscript(session.id);
 }
@@ -71,6 +75,7 @@ export async function hangUpCall(sessionId: number): Promise<SessionTranscript> 
   }
 
   await endCallSession(sessionId);
+  await closeCallVoiceSession(sessionId);
   return triggerSmsFallback(sessionId);
 }
 
@@ -152,12 +157,17 @@ async function submitWorkflowInput(
           isComplete: firstResult.isComplete,
           shouldCreateRefillRequest: firstResult.shouldCreateRefillRequest
         };
+  const voiceResult =
+    expectedChannel === "call"
+      ? await phraseCallReply(sessionId, text, result.agentReply)
+      : { replyText: result.agentReply, events: [] };
 
   await appendConversationMessage({
     sessionId,
     role: "assistant",
-    content: result.agentReply
+    content: voiceResult.replyText
   });
+  await persistVoiceEvents(sessionId, voiceResult.events);
 
   const refillRequest = result.shouldCreateRefillRequest
     ? await createRefillRequestFromSession(sessionId)
@@ -167,9 +177,10 @@ async function submitWorkflowInput(
     session: refillRequest
       ? (await fetchSessionTranscript(sessionId)).session
       : result.session,
-    agentReply: result.agentReply,
+    agentReply: voiceResult.replyText,
     isComplete: result.isComplete,
-    refillRequest
+    refillRequest,
+    voiceEvents: voiceResult.events
   };
 }
 
@@ -244,4 +255,89 @@ function getNextMissingStep(state: RefillSessionState): WorkflowStep {
 
 function hasMessage(transcript: SessionTranscript, content: string): boolean {
   return transcript.messages.some((message) => message.content === content);
+}
+
+async function createCallVoiceSession(sessionId: number) {
+  try {
+    await getCallVoiceProvider().createSession({
+      sessionId,
+      systemInstruction: [
+        "You are a concise voice assistant for a prescription refill demo.",
+        "The deterministic workflow engine controls all refill state.",
+        "Only rephrase supplied agent replies for natural phone conversation.",
+        "Do not invent medical, insurance, pharmacy, or workflow decisions."
+      ].join(" ")
+    });
+  } catch (error) {
+    await appendConversationMessage({
+      sessionId,
+      role: "system",
+      content: `Voice provider unavailable; using deterministic call text. ${formatError(error)}`
+    });
+  }
+}
+
+async function phraseCallReply(
+  sessionId: number,
+  userText: string,
+  deterministicReply: string
+) {
+  try {
+    return await getCallVoiceProvider().sendUserTurn({
+      sessionId,
+      userText,
+      deterministicReply
+    });
+  } catch (error) {
+    await appendConversationMessage({
+      sessionId,
+      role: "system",
+      content: `Voice provider turn failed; using deterministic reply. ${formatError(error)}`
+    });
+
+    return {
+      replyText: deterministicReply,
+      events: []
+    };
+  }
+}
+
+async function closeCallVoiceSession(sessionId: number) {
+  try {
+    const events = await getCallVoiceProvider().closeSession(sessionId);
+    await persistVoiceEvents(sessionId, events);
+  } catch (error) {
+    await appendConversationMessage({
+      sessionId,
+      role: "system",
+      content: `Voice provider close failed. ${formatError(error)}`
+    });
+  }
+}
+
+async function persistVoiceEvents(
+  sessionId: number,
+  events: VoiceLiveEvent[]
+) {
+  for (const event of events) {
+    if (event.type === "tool_call") {
+      await appendConversationMessage({
+        sessionId,
+        role: "tool",
+        content: `Voice tool call event: ${JSON.stringify(event.toolCalls ?? [])}`
+      });
+    }
+
+    if (event.type === "error") {
+      await appendConversationMessage({
+        sessionId,
+        role: "system",
+        content: `Voice provider error: ${JSON.stringify(event.raw ?? {})}`
+      });
+    }
+  }
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown error";
 }

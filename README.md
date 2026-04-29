@@ -69,6 +69,13 @@ This repository currently contains the project foundation only. It does not incl
 - `npm run db:push` - apply the Prisma schema to the local SQLite database
 - `npm run seed` - seed the local database
 
+## Environment
+
+- `DATABASE_URL` - local SQLite database path
+- `GEMINI_API_KEY` - server-only Google Gemini API key for simulated call mode
+- `GEMINI_LIVE_MODEL` - Gemini Live model ID, defaults to `gemini-3.1-flash-live-preview`
+- `ENABLE_GEMINI_LIVE` - set to `true` to use the Gemini Live WebSocket provider; otherwise call mode uses the deterministic local fallback
+
 ## Seeded Demo Data
 
 Running `npm run seed` creates or updates:
@@ -90,12 +97,14 @@ The server-side persistence helpers live in `lib/refill-persistence.ts`. They lo
 
 The local demo exposes JSON-only route handlers for simulated call and SMS flows. These endpoints do not connect to real speech, telephony, or SMS providers.
 
+Call-mode replies go through the server-owned voice provider boundary in `lib/voice`. When Gemini Live is enabled, the backend opens a Gemini Live WebSocket session and can surface transcription, model text, model audio, and tool-call events on call input responses as `voiceEvents`. SMS mode does not use Gemini.
+
 - `POST /api/workflow/call/start`
   - Body: none
   - Response: `{ session, messages, refillRequest? }`
 - `POST /api/workflow/call/input`
   - Body: `{ "sessionId": number, "text": string }`
-  - Response: `{ session, agentReply, isComplete, refillRequest? }`
+  - Response: `{ session, agentReply, isComplete, refillRequest?, voiceEvents? }`
 - `POST /api/workflow/call/hangup`
   - Body: `{ "sessionId": number }`
   - Response: `{ session, messages, refillRequest? }`
@@ -118,6 +127,14 @@ The local demo exposes JSON-only route handlers for simulated call and SMS flows
 │   └── page.tsx
 ├── lib/
 │   ├── refill-persistence.ts
+│   ├── refill-session-service.ts
+│   ├── route-errors.ts
+│   ├── voice/
+│   │   ├── config.ts
+│   │   ├── gemini-live-client.ts
+│   │   ├── local-voice-provider.ts
+│   │   ├── provider.ts
+│   │   └── types.ts
 │   └── prisma.ts
 ├── prisma/
 │   ├── ensure-sqlite-db.ts
