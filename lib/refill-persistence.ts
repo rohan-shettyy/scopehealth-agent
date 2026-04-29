@@ -12,16 +12,14 @@ import type {
   RefillRequest
 } from "@prisma/client";
 
-import type {
-  CopaySummary,
-  InsuranceSummary,
-  RefillWorkflowContext
-} from "@/domain/refill-engine";
 import {
+  type CopaySummary,
   type ConversationChannel,
+  type InsuranceSummary,
   type MedicationChoice,
   type PatientSummary,
   type PharmacyChoice,
+  type RefillWorkflowContext,
   type RefillSessionState,
   type SessionStatus,
   type WorkflowStep,

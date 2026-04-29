@@ -75,7 +75,7 @@ This repository currently contains the project foundation only. It does not incl
 - `GEMINI_API_KEY` - server-only Google Gemini API key for simulated call mode
 - `GEMINI_LIVE_MODEL` - Gemini Live model ID, defaults to `gemini-3.1-flash-live-preview`
 - `GEMINI_TEXT_MODEL` - Gemini text model for SMS and structured fallback orchestration, defaults to `gemini-3.1-flash-lite-preview`
-- `ENABLE_GEMINI_LIVE` - set to `true` to use the Gemini Live WebSocket provider; otherwise call mode uses the deterministic local fallback
+- `ENABLE_GEMINI_LIVE` - set to `true` to use the Gemini Live WebSocket provider
 
 ## Seeded Demo Data
 
@@ -98,7 +98,7 @@ The server-side persistence helpers live in `lib/refill-persistence.ts`. They lo
 
 The local demo exposes JSON-only route handlers for simulated call and SMS flows. These endpoints do not connect to real speech, telephony, or SMS providers.
 
-Call-mode replies go through the server-owned voice provider boundary in `lib/voice`. When Gemini Live is enabled, the backend opens a Gemini Live WebSocket session and can surface transcription, model text, model audio, and tool-call events on call input responses as `voiceEvents`. Gemini now drives the primary workflow proposal and response text; the deterministic workflow remains only as a local fallback if Gemini is unavailable or returns unusable structured output. SMS responses use the configured Gemini text model, defaulting to `gemini-3.1-flash-lite-preview`.
+Call-mode replies go through the server-owned voice provider boundary in `lib/voice`. When Gemini Live is enabled, the backend opens a Gemini Live WebSocket session and can surface transcription, model text, model audio, and tool-call events on call input responses as `voiceEvents`. Gemini drives the workflow proposal and response text. SMS responses use the configured Gemini text model, defaulting to `gemini-3.1-flash-lite-preview`.
 
 For browser voice simulation, the call panel captures microphone audio, converts it to raw little-endian PCM16 mono at 16kHz, and streams chunks to the backend as `audio/pcm;rate=16000`. Gemini Live audio output is expected as PCM audio and is played in the browser at the MIME type's declared sample rate, usually 24kHz.
 

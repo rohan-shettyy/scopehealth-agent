@@ -1,12 +1,7 @@
-import { advanceRefillWorkflow } from "@/domain/refill-engine";
 import { normalizeReadableTranscript } from "@/domain/spoken-date";
 import type { RefillSessionState, WorkflowStep } from "@/domain/workflow";
-import {
-  buildCallSystemInstruction,
-  buildCallTurnInstruction,
-  guardCallReply
-} from "@/lib/voice/call-turn-instructions";
-import { advanceRefillWorkflowWithGemini } from "@/lib/gemini-workflow-orchestrator";
+import { buildCallSystemInstruction } from "@/lib/voice/call-turn-instructions";
+import { advanceGeminiRefillWorkflow } from "@/lib/gemini-workflow-orchestrator";
 import {
   appendConversationMessage,
   createConversationSession,
@@ -46,26 +41,22 @@ export async function startSimulatedCall(): Promise<StartCallResult> {
     "Hi, this is the prescription refill assistant. Please provide Sarah Chen's date of birth to get started.";
 
   await createCallVoiceSession(session.id);
-  const greetingInstruction = buildCallTurnInstruction({
-    state: session.state,
-    context,
-    patientUtterance: "The call just connected.",
-    deterministicReply: agentReply
-  });
   const voiceResult = await phraseCallReply(
     session.id,
     "The call just connected.",
     agentReply,
-    greetingInstruction.prompt
+    [
+      "The call just connected.",
+      "Greet Sarah Chen and ask for her date of birth to begin the refill.",
+      "Keep it brief and natural for a phone call."
+    ].join("\n")
   );
-  const guardedReply = guardCallReply(greetingInstruction, voiceResult.replyText);
 
   await appendConversationMessage({
     sessionId: session.id,
     role: "assistant",
-    content: guardedReply.replyText
+    content: voiceResult.replyText
   });
-  await persistGuardrailFallback(session.id, guardedReply);
   await persistVoiceEvents(session.id, voiceResult.events);
 
   return {
@@ -216,9 +207,7 @@ export async function triggerSmsFallback(
       ? transcript.session
       : await switchSessionToSms(sessionId);
   const context = await loadDemoPatientWorkflowContext();
-  const agentReply =
-    (await getGeminiSmsContinuationPrompt(session.state, context)) ??
-    getContinuationPrompt(session.state, context);
+  const agentReply = await getGeminiSmsContinuationPrompt(session.state, context);
 
   if (!hasMessage(await fetchSessionTranscript(sessionId), agentReply)) {
     await appendConversationMessage({
@@ -259,7 +248,7 @@ async function submitWorkflowInput(
   });
 
   const context = await loadDemoPatientWorkflowContext();
-  const firstResult = await advanceRefillWorkflowWithGemini(
+  const firstResult = await advanceGeminiRefillWorkflow(
     transcript.session.state,
     {
       text,
@@ -268,43 +257,24 @@ async function submitWorkflowInput(
     context,
     expectedChannel
   );
-  if (!firstResult.usedGemini) {
-    await appendConversationMessage({
-      sessionId,
-      role: "system",
-      content: "Gemini workflow orchestration unavailable; deterministic workflow fallback used for this turn."
-    });
-  }
   const firstSession = await updateConversationSessionState(
     sessionId,
     firstResult.updatedSession
   );
-  const result =
-    firstSession.state.nextExpectedStep === "notify_copay" &&
-    !firstSession.state.copayAmountCents
-      ? await advanceGeneratedWorkflowStep(sessionId, firstSession.state)
-      : {
-          session: firstSession,
-          agentReply: firstResult.agentReply,
-          isComplete: firstResult.isComplete,
-          shouldCreateRefillRequest: firstResult.shouldCreateRefillRequest
-        };
+  const result = {
+    session: firstSession,
+    agentReply: firstResult.agentReply,
+    isComplete: firstResult.isComplete,
+    shouldCreateRefillRequest: firstResult.shouldCreateRefillRequest
+  };
   const voiceResult =
     expectedChannel === "call"
-      ? firstResult.usedGemini
-        ? await phraseCallReplyForGeminiState(
+      ? await phraseCallReplyForGeminiState(
             sessionId,
             text,
             result.agentReply,
             result.session.state,
             context
-          )
-        : await phraseCallReplyForState(
-          sessionId,
-          text,
-          result.agentReply,
-          result.session.state,
-          context
           )
       : { replyText: result.agentReply, events: [] };
 
@@ -330,62 +300,11 @@ async function submitWorkflowInput(
   };
 }
 
-async function advanceGeneratedWorkflowStep(
-  sessionId: number,
-  state: RefillSessionState
-) {
-  const context = await loadDemoPatientWorkflowContext();
-  const result = advanceRefillWorkflow(state, { text: "" }, context);
-  const session = await updateConversationSessionState(
-    sessionId,
-    result.updatedSession
-  );
-
-  return {
-    session,
-    agentReply: result.agentReply,
-    isComplete: result.isComplete,
-    shouldCreateRefillRequest: result.shouldCreateRefillRequest
-  };
-}
-
-function getContinuationPrompt(
-  state: RefillSessionState,
-  context: Awaited<ReturnType<typeof loadDemoPatientWorkflowContext>>
-): string {
-  const medication = state.selectedMedication
-    ? `${state.selectedMedication.medicationName} ${state.selectedMedication.strength}`
-    : undefined;
-  const pharmacy = state.selectedPharmacy
-    ? formatPharmacyForMessage(state.selectedPharmacy)
-    : undefined;
-  const copay = state.copayAmountCents !== undefined
-    ? formatCurrencyForMessage(state.copayAmountCents)
-    : undefined;
-
-  switch (getNextMissingStep(state)) {
-    case "verify_dob":
-      return "Looks like we got disconnected. To continue Sarah Chen's refill, please reply with her date of birth.";
-    case "select_medication":
-      return `Looks like we got disconnected. Which medication would you like to refill? ${context.activePrescriptions
-        .map((option) => `${option.medicationName} ${option.strength}`)
-        .join(", ")}.`;
-    case "confirm_pharmacy":
-      return `Looks like we got disconnected. I have your ${medication ?? "refill"} started. Should I send it to ${context.pharmacyOnFile.name}, ${context.pharmacyOnFile.addressLine1}?`;
-    case "verify_insurance":
-      return `Looks like we got disconnected. I have ${medication ?? "the refill"} set for ${pharmacy ?? formatPharmacyForMessage(context.pharmacyOnFile)}. Is your ${context.insurancePolicy.payerName} ${context.insurancePolicy.planName} insurance still current?`;
-    case "notify_copay":
-      return `Looks like we got disconnected. Reply anything when you are ready and I will send the copay${medication ? ` for ${medication}` : ""}.`;
-    case "complete_refill":
-      return `Thanks. ${copay && medication ? `Your copay for ${medication} is ${copay}. ` : ""}Reply YES to finish your refill request${pharmacy ? ` with ${pharmacy}` : ""}.`;
-  }
-}
-
 async function getGeminiSmsContinuationPrompt(
   state: RefillSessionState,
   context: Awaited<ReturnType<typeof loadDemoPatientWorkflowContext>>
 ) {
-  return generateTextWithGemini(
+  const reply = await generateTextWithGemini(
     [
       "You are the SMS continuation assistant for a prescription refill demo.",
       "Use gemini-3.1-flash-lite-preview behavior: concise, reliable, and text-message friendly.",
@@ -411,6 +330,12 @@ async function getGeminiSmsContinuationPrompt(
       maxOutputTokens: 180
     }
   );
+
+  if (!reply) {
+    throw new Error("Gemini SMS continuation did not return a response");
+  }
+
+  return reply;
 }
 
 function getNextMissingStep(state: RefillSessionState): WorkflowStep {
@@ -468,57 +393,15 @@ async function createCallVoiceSession(sessionId: number) {
 async function phraseCallReply(
   sessionId: number,
   userText: string,
-  deterministicReply: string,
+  requiredReply: string,
   instructionPrompt: string
 ) {
-  try {
-    return await getCallVoiceProvider().sendUserTurn({
-      sessionId,
-      userText,
-      deterministicReply,
-      instructionPrompt
-    });
-  } catch (error) {
-    await appendConversationMessage({
-      sessionId,
-      role: "system",
-      content: `Gemini voice turn failed; showing deterministic text reply. ${formatError(error)}`
-    });
-
-    return {
-      replyText: deterministicReply,
-      events: []
-    };
-  }
-}
-
-async function phraseCallReplyForState(
-  sessionId: number,
-  userText: string,
-  deterministicReply: string,
-  state: RefillSessionState,
-  context: Awaited<ReturnType<typeof loadDemoPatientWorkflowContext>>
-) {
-  const instruction = buildCallTurnInstruction({
-    state,
-    context,
-    patientUtterance: userText,
-    deterministicReply
-  });
-  const voiceResult = await phraseCallReply(
+  return getCallVoiceProvider().sendUserTurn({
     sessionId,
     userText,
-    deterministicReply,
-    instruction.prompt
-  );
-  const guardedReply = guardCallReply(instruction, voiceResult.replyText);
-
-  await persistGuardrailFallback(sessionId, guardedReply);
-
-  return {
-    ...voiceResult,
-    replyText: guardedReply.replyText
-  };
+    requiredReply,
+    instructionPrompt
+  });
 }
 
 async function phraseCallReplyForGeminiState(
@@ -549,21 +432,6 @@ async function phraseCallReplyForGeminiState(
       `Say this meaning, with natural phone phrasing: ${geminiReply}`
     ].join("\n")
   );
-}
-
-async function persistGuardrailFallback(
-  sessionId: number,
-  result: ReturnType<typeof guardCallReply>
-) {
-  if (!result.usedFallback) {
-    return;
-  }
-
-  await appendConversationMessage({
-    sessionId,
-    role: "system",
-    content: `Voice model reply overridden by call guardrails: ${result.reason ?? "unspecified"}`
-  });
 }
 
 async function closeCallVoiceSession(sessionId: number) {
@@ -633,17 +501,4 @@ function getPatientAudioTranscriptEvents(events: VoiceLiveEvent[]) {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
-}
-
-function formatPharmacyForMessage(pharmacy: {
-  name: string;
-  addressLine1?: string;
-}) {
-  return pharmacy.addressLine1
-    ? `${pharmacy.name}, ${pharmacy.addressLine1}`
-    : pharmacy.name;
-}
-
-function formatCurrencyForMessage(amountCents: number) {
-  return `$${(amountCents / 100).toFixed(2).replace(/\.00$/, "")}`;
 }

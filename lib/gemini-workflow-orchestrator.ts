@@ -1,12 +1,9 @@
 import {
-  advanceRefillWorkflow,
-  type RefillWorkflowContext,
-  type RefillWorkflowResult
-} from "@/domain/refill-engine";
-import {
   WORKFLOW_STEPS,
   type MedicationChoice,
   type PharmacyChoice,
+  type RefillWorkflowContext,
+  type RefillWorkflowResult,
   type RefillSessionState,
   type WorkflowStep,
   hasRequiredRefillFields,
@@ -30,17 +27,12 @@ interface GeminiWorkflowJson {
   nextExpectedStep?: string;
 }
 
-export async function advanceRefillWorkflowWithGemini(
+export async function advanceGeminiRefillWorkflow(
   state: RefillSessionState,
   input: { text: string; receivedAt?: string },
   context: RefillWorkflowContext,
   channel: GeminiChannel
-): Promise<RefillWorkflowResult & { usedGemini: boolean }> {
-  const fallback = () => ({
-    ...advanceRefillWorkflow(state, input, context),
-    usedGemini: false
-  });
-
+): Promise<RefillWorkflowResult> {
   const raw = await generateTextWithGemini(
     buildGeminiWorkflowSystem(channel),
     buildGeminiWorkflowPrompt(state, input.text, context, channel),
@@ -52,13 +44,13 @@ export async function advanceRefillWorkflowWithGemini(
   );
 
   if (!raw) {
-    return fallback();
+    throw new Error("Gemini workflow orchestration did not return a response");
   }
 
   const parsed = parseGeminiJson(raw);
 
   if (!parsed?.agentReply) {
-    return fallback();
+    throw new Error("Gemini workflow orchestration returned unusable structured output");
   }
 
   const selectedMedication = parsed.selectedMedicationName
@@ -128,8 +120,7 @@ export async function advanceRefillWorkflowWithGemini(
     updatedSession,
     agentReply: parsed.agentReply,
     isComplete: completeRefill,
-    shouldCreateRefillRequest: completeRefill,
-    usedGemini: true
+    shouldCreateRefillRequest: completeRefill
   };
 }
 

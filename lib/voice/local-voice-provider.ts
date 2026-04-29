@@ -41,7 +41,7 @@ export class LocalVoiceProvider implements VoiceProvider {
         sessionId: input.sessionId,
         provider: "local-fallback",
         type: "model_transcript",
-        text: input.deterministicReply,
+        text: input.requiredReply,
         createdAt: new Date().toISOString()
       }
     ];
@@ -49,7 +49,7 @@ export class LocalVoiceProvider implements VoiceProvider {
     eventsBySession.get(input.sessionId)?.push(...events);
 
     return {
-      replyText: input.deterministicReply,
+      replyText: input.requiredReply,
       events
     };
   }

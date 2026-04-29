@@ -12,13 +12,13 @@ const GENERATE_CONTENT_BASE =
 export async function rephraseWithGemini(
   systemInstruction: string,
   userText: string,
-  deterministicReply: string,
+  requiredReply: string,
   instructionPrompt?: string
 ): Promise<string> {
   const config = getGeminiLiveConfig();
 
   if (!config.apiKey) {
-    return deterministicReply;
+    return requiredReply;
   }
 
   const model = config.textModel;
@@ -36,12 +36,12 @@ export async function rephraseWithGemini(
             text: [
               instructionPrompt ??
                 [
-                  "The deterministic refill workflow has already decided the next agent reply.",
+                  "Gemini structured orchestration has already selected the next agent reply.",
                   "Rewrite it naturally for a brief phone conversation.",
                   "Do not ask for information beyond this reply.",
                   "Do not decide workflow state or mention tools.",
                   `Patient said: ${userText}`,
-                  `Required reply meaning: ${deterministicReply}`
+                  `Required reply meaning: ${requiredReply}`
                 ].join("\n")
             ].join("\n")
           }
@@ -65,7 +65,7 @@ export async function rephraseWithGemini(
       console.error(
         `Gemini generateContent failed: ${response.status} ${response.statusText}`
       );
-      return deterministicReply;
+      return requiredReply;
     }
 
     const json = await response.json();
@@ -75,10 +75,10 @@ export async function rephraseWithGemini(
         ?.join(" ")
         ?.trim() ?? "";
 
-    return text || deterministicReply;
+    return text || requiredReply;
   } catch (error) {
     console.error("Gemini generateContent error:", error);
-    return deterministicReply;
+    return requiredReply;
   }
 }
 

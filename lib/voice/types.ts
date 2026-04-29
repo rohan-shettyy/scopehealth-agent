@@ -42,7 +42,7 @@ export interface VoiceSessionStartInput {
 export interface VoiceTurnInput {
   sessionId: number;
   userText: string;
-  deterministicReply: string;
+  requiredReply: string;
   instructionPrompt: string;
 }
 

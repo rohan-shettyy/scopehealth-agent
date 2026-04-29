@@ -111,7 +111,7 @@ export class GeminiLiveClient implements VoiceProvider {
       .trim();
 
     return {
-      replyText: modelText || input.deterministicReply,
+      replyText: modelText || input.requiredReply,
       events
     };
   }

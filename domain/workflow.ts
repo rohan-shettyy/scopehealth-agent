@@ -48,6 +48,39 @@ export interface RefillCompletionPayload {
   completedAt: string;
 }
 
+export interface InsuranceSummary {
+  insurancePolicyId: number;
+  payerName: string;
+  planName: string;
+  memberId: string;
+}
+
+export interface CopaySummary {
+  prescriptionId: number;
+  insurancePolicyId: number;
+  amountCents: number;
+}
+
+export interface RefillWorkflowContext {
+  patient: PatientSummary;
+  activePrescriptions: MedicationChoice[];
+  pharmacyOnFile: PharmacyChoice;
+  insurancePolicy: InsuranceSummary;
+  copayRules: CopaySummary[];
+}
+
+export interface RefillWorkflowInput {
+  text: string;
+  receivedAt?: string;
+}
+
+export interface RefillWorkflowResult {
+  updatedSession: Partial<RefillSessionState>;
+  agentReply: string;
+  isComplete: boolean;
+  shouldCreateRefillRequest: boolean;
+}
+
 export interface RefillSessionState {
   channel: ConversationChannel;
   status: SessionStatus;
