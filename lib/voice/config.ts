@@ -8,7 +8,7 @@ export interface GeminiLiveConfig {
   endpoint: string;
 }
 
-export const GEMINI_TEXT_DEFAULT_MODEL = "gemini-2.5-flash";
+export const GEMINI_TEXT_DEFAULT_MODEL = "gemini-3.1-flash-lite-preview";
 
 export function getGeminiLiveConfig(): GeminiLiveConfig {
   return {

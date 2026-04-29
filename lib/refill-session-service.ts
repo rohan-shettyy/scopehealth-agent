@@ -6,6 +6,7 @@ import {
   buildCallTurnInstruction,
   guardCallReply
 } from "@/lib/voice/call-turn-instructions";
+import { advanceRefillWorkflowWithGemini } from "@/lib/gemini-workflow-orchestrator";
 import {
   appendConversationMessage,
   createConversationSession,
@@ -20,6 +21,7 @@ import {
   type SessionTranscript
 } from "@/lib/refill-persistence";
 import { getCallVoiceProvider } from "@/lib/voice/provider";
+import { generateTextWithGemini } from "@/lib/voice/gemini-text-client";
 import type { VoiceLiveEvent } from "@/lib/voice/types";
 
 export interface WorkflowInteractionResult {
@@ -214,7 +216,9 @@ export async function triggerSmsFallback(
       ? transcript.session
       : await switchSessionToSms(sessionId);
   const context = await loadDemoPatientWorkflowContext();
-  const agentReply = getContinuationPrompt(session.state, context);
+  const agentReply =
+    (await getGeminiSmsContinuationPrompt(session.state, context)) ??
+    getContinuationPrompt(session.state, context);
 
   if (!hasMessage(await fetchSessionTranscript(sessionId), agentReply)) {
     await appendConversationMessage({
@@ -255,14 +259,22 @@ async function submitWorkflowInput(
   });
 
   const context = await loadDemoPatientWorkflowContext();
-  const firstResult = advanceRefillWorkflow(
+  const firstResult = await advanceRefillWorkflowWithGemini(
     transcript.session.state,
     {
       text,
       receivedAt: new Date().toISOString()
     },
-    context
+    context,
+    expectedChannel
   );
+  if (!firstResult.usedGemini) {
+    await appendConversationMessage({
+      sessionId,
+      role: "system",
+      content: "Gemini workflow orchestration unavailable; deterministic workflow fallback used for this turn."
+    });
+  }
   const firstSession = await updateConversationSessionState(
     sessionId,
     firstResult.updatedSession
@@ -279,13 +291,21 @@ async function submitWorkflowInput(
         };
   const voiceResult =
     expectedChannel === "call"
-      ? await phraseCallReplyForState(
+      ? firstResult.usedGemini
+        ? await phraseCallReplyForGeminiState(
+            sessionId,
+            text,
+            result.agentReply,
+            result.session.state,
+            context
+          )
+        : await phraseCallReplyForState(
           sessionId,
           text,
           result.agentReply,
           result.session.state,
           context
-        )
+          )
       : { replyText: result.agentReply, events: [] };
 
   await appendConversationMessage({
@@ -359,6 +379,38 @@ function getContinuationPrompt(
     case "complete_refill":
       return `Thanks. ${copay && medication ? `Your copay for ${medication} is ${copay}. ` : ""}Reply YES to finish your refill request${pharmacy ? ` with ${pharmacy}` : ""}.`;
   }
+}
+
+async function getGeminiSmsContinuationPrompt(
+  state: RefillSessionState,
+  context: Awaited<ReturnType<typeof loadDemoPatientWorkflowContext>>
+) {
+  return generateTextWithGemini(
+    [
+      "You are the SMS continuation assistant for a prescription refill demo.",
+      "Use gemini-3.1-flash-lite-preview behavior: concise, reliable, and text-message friendly.",
+      "Continue from the existing state. Do not re-ask collected information.",
+      "Only discuss DOB verification, medication, pharmacy, insurance, copay, or refill completion.",
+      "Return only the SMS message text. No markdown."
+    ].join("\n"),
+    JSON.stringify(
+      {
+        currentState: state,
+        patient: context.patient,
+        activePrescriptions: context.activePrescriptions,
+        pharmacyOnFile: context.pharmacyOnFile,
+        insurancePolicy: context.insurancePolicy,
+        copayRules: context.copayRules,
+        nextMissingStep: getNextMissingStep(state)
+      },
+      null,
+      2
+    ),
+    {
+      temperature: 0.35,
+      maxOutputTokens: 180
+    }
+  );
 }
 
 function getNextMissingStep(state: RefillSessionState): WorkflowStep {
@@ -467,6 +519,36 @@ async function phraseCallReplyForState(
     ...voiceResult,
     replyText: guardedReply.replyText
   };
+}
+
+async function phraseCallReplyForGeminiState(
+  sessionId: number,
+  userText: string,
+  geminiReply: string,
+  state: RefillSessionState,
+  context: Awaited<ReturnType<typeof loadDemoPatientWorkflowContext>>
+) {
+  return phraseCallReply(
+    sessionId,
+    userText,
+    geminiReply,
+    [
+      "Gemini is the primary call agent for this simulated refill call.",
+      "Speak naturally and briefly as a healthcare administrative phone agent.",
+      "Use this exact workflow state as context, but do not mention JSON, tools, or implementation details.",
+      "Do not ask for information already collected.",
+      "Do not provide medical advice.",
+      `Current state: ${JSON.stringify(state)}`,
+      `Patient: ${context.patient.fullName}`,
+      `Available medications: ${context.activePrescriptions
+        .map((prescription) => `${prescription.medicationName} ${prescription.strength}`)
+        .join(", ")}`,
+      `Pharmacy on file: ${context.pharmacyOnFile.name}, ${context.pharmacyOnFile.addressLine1}`,
+      `Insurance: ${context.insurancePolicy.payerName} ${context.insurancePolicy.planName}`,
+      `Patient said: ${userText}`,
+      `Say this meaning, with natural phone phrasing: ${geminiReply}`
+    ].join("\n")
+  );
 }
 
 async function persistGuardrailFallback(
