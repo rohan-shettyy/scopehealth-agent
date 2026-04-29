@@ -1,0 +1,27 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+
+# production
+dist/
+build/
+
+# local env files
+.env
+.env*.local
+
+# prisma
+prisma/dev.db
+prisma/dev.db-journal
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# system
+.DS_Store
