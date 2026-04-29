@@ -86,6 +86,28 @@ Running `npm run seed` creates or updates:
 
 The server-side persistence helpers live in `lib/refill-persistence.ts`. They load the demo patient context, create and update conversation sessions, append transcript messages, switch call sessions to SMS, end call sessions, create refill requests after workflow completion, and fetch a full session snapshot for future UI/debug panels.
 
+## Workflow API
+
+The local demo exposes JSON-only route handlers for simulated call and SMS flows. These endpoints do not connect to real speech, telephony, or SMS providers.
+
+- `POST /api/workflow/call/start`
+  - Body: none
+  - Response: `{ session, messages, refillRequest? }`
+- `POST /api/workflow/call/input`
+  - Body: `{ "sessionId": number, "text": string }`
+  - Response: `{ session, agentReply, isComplete, refillRequest? }`
+- `POST /api/workflow/call/hangup`
+  - Body: `{ "sessionId": number }`
+  - Response: `{ session, messages, refillRequest? }`
+- `POST /api/workflow/sms/fallback`
+  - Body: `{ "sessionId": number }`
+  - Response: `{ session, messages, refillRequest? }`
+- `POST /api/workflow/sms/reply`
+  - Body: `{ "sessionId": number, "text": string }`
+  - Response: `{ session, agentReply, isComplete, refillRequest? }`
+- `GET /api/workflow/sessions/:sessionId`
+  - Response: `{ session, messages, refillRequest? }`
+
 ## Project Structure
 
 ```text
