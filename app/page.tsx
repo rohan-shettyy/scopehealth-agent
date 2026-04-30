@@ -22,6 +22,10 @@ interface SessionState {
     medicationName: string;
     strength: string;
   };
+  selectedMedications?: Array<{
+    medicationName: string;
+    strength: string;
+  }>;
   selectedPharmacy?: {
     name: string;
     addressLine1?: string;
@@ -48,6 +52,7 @@ interface RefillRequestSnapshot {
   id: number;
   patientId: number;
   prescriptionId?: number;
+  prescriptionIds?: number[];
   pharmacyId?: number;
   alternatePharmacy?: string;
   insurancePolicyId?: number;
@@ -161,7 +166,11 @@ export default function Home() {
 
     const state = session.state;
     const details = [
-      state.selectedMedication
+      state.selectedMedications && state.selectedMedications.length > 0
+        ? state.selectedMedications
+            .map((medication) => `${medication.medicationName} ${medication.strength}`)
+            .join(", ")
+        : state.selectedMedication
         ? `${state.selectedMedication.medicationName} ${state.selectedMedication.strength}`
         : undefined,
       state.selectedPharmacy
@@ -940,10 +949,10 @@ export default function Home() {
               <dd>{workflowSummary}</dd>
             </div>
             <div>
-              <dt>Medication</dt>
+              <dt>Medications</dt>
               <dd>
-                {session?.state.selectedMedication
-                  ? `${session.state.selectedMedication.medicationName} ${session.state.selectedMedication.strength}`
+                {getMedicationSummary(session?.state)
+                  ? getMedicationSummary(session?.state)
                   : "pending"}
               </dd>
             </div>
@@ -982,10 +991,12 @@ export default function Home() {
                   <dd>{refillRequest.status.toLowerCase()}</dd>
                 </div>
                 <div>
-                  <dt>Prescription</dt>
+                  <dt>Prescriptions</dt>
                   <dd>
-                    {session?.state.selectedMedication
-                      ? `${session.state.selectedMedication.medicationName} ${session.state.selectedMedication.strength}`
+                    {getMedicationSummary(session?.state)
+                      ? getMedicationSummary(session?.state)
+                      : refillRequest.prescriptionIds?.length
+                        ? `Prescriptions #${refillRequest.prescriptionIds.join(", #")}`
                       : refillRequest.prescriptionId
                         ? `Prescription #${refillRequest.prescriptionId}`
                         : "Not recorded"}
@@ -1272,6 +1283,20 @@ function formatPharmacy(pharmacy: {
 
 function formatCurrency(amountCents: number) {
   return `$${(amountCents / 100).toFixed(2).replace(/\.00$/, "")}`;
+}
+
+function getMedicationSummary(state?: SessionState) {
+  if (state?.selectedMedications && state.selectedMedications.length > 0) {
+    return state.selectedMedications
+      .map((medication) => `${medication.medicationName} ${medication.strength}`)
+      .join(", ");
+  }
+
+  if (state?.selectedMedication) {
+    return `${state.selectedMedication.medicationName} ${state.selectedMedication.strength}`;
+  }
+
+  return undefined;
 }
 
 function formatError(error: unknown) {

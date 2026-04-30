@@ -94,6 +94,7 @@ model RefillRequest {
   id                  Int                  @id @default(autoincrement())
   patientId           Int
   prescriptionId      Int?
+  prescriptionIdsJson String?
   pharmacyId          Int?
   alternatePharmacy   String?
   insurancePolicyId   Int?
@@ -123,6 +124,7 @@ model ConversationSession {
   identityVerified     Boolean                   @default(false)
   verifiedAt           DateTime?
   selectedMedicationId Int?
+  selectedMedicationsJson String?
   selectedPharmacyId   Int?
   alternatePharmacy    String?
   insuranceVerified    Boolean                   @default(false)

@@ -31,13 +31,13 @@ export const DEMO_PATIENT_PHONE = "(555) 867-5309";
 
 export type ConversationMessageRole = "system" | "assistant" | "user" | "tool";
 
-export interface CreateConversationSessionInput {
+interface CreateConversationSessionInput {
   patientId?: number;
   channel?: ConversationChannel;
   sessionKey?: string;
 }
 
-export interface AppendConversationMessageInput {
+interface AppendConversationMessageInput {
   sessionId: number;
   role: ConversationMessageRole;
   content: string;
@@ -71,6 +71,7 @@ export interface RefillRequestSnapshot {
   id: number;
   patientId: number;
   prescriptionId?: number;
+  prescriptionIds?: number[];
   pharmacyId?: number;
   alternatePharmacy?: string;
   insurancePolicyId?: number;
@@ -159,9 +160,6 @@ export async function loadSeededPatientByPhone(
   return toPatientSummary(patient);
 }
 
-export async function loadDemoPatientIdentity(): Promise<PatientSummary> {
-  return loadSeededPatientByPhone(DEMO_PATIENT_PHONE);
-}
 
 export async function createConversationSession(
   input: CreateConversationSessionInput = {}
@@ -275,6 +273,13 @@ export async function createRefillRequestFromSession(
       data: {
         patientId: session.patientId,
         prescriptionId: session.selectedMedicationId,
+        prescriptionIdsJson: session.selectedMedicationsJson
+          ? JSON.stringify(parseMedicationChoices(session.selectedMedicationsJson).map(
+              (medication) => medication.prescriptionId
+            ))
+          : session.selectedMedicationId
+            ? JSON.stringify([session.selectedMedicationId])
+            : undefined,
         pharmacyId: session.selectedPharmacyId,
         alternatePharmacy: session.alternatePharmacy,
         insurancePolicyId: await findActiveInsurancePolicyId(
@@ -380,6 +385,7 @@ function toSessionSnapshot(
       selectedMedication: session.selectedMedication
         ? toMedicationChoice(session.selectedMedication)
         : undefined,
+      selectedMedications: parseSessionSelectedMedications(session),
       selectedPharmacy: toSelectedPharmacyChoice(session),
       insuranceVerified: session.insuranceVerified,
       copayAmountCents: session.copayAmountCents ?? undefined,
@@ -401,6 +407,9 @@ function toSessionUpdateData(
     verifiedAt: state.verifiedAt ? new Date(state.verifiedAt) : undefined,
     selectedMedication: state.selectedMedication
       ? { connect: { id: state.selectedMedication.prescriptionId } }
+      : undefined,
+    selectedMedicationsJson: state.selectedMedications
+      ? JSON.stringify(state.selectedMedications)
       : undefined,
     selectedPharmacy: toSelectedPharmacyUpdate(state.selectedPharmacy),
     alternatePharmacy: toAlternatePharmacyUpdate(state.selectedPharmacy),
@@ -493,6 +502,7 @@ function toRefillRequestSnapshot(
     id: refillRequest.id,
     patientId: refillRequest.patientId,
     prescriptionId: refillRequest.prescriptionId ?? undefined,
+    prescriptionIds: parsePrescriptionIds(refillRequest.prescriptionIdsJson),
     pharmacyId: refillRequest.pharmacyId ?? undefined,
     alternatePharmacy: refillRequest.alternatePharmacy ?? undefined,
     insurancePolicyId: refillRequest.insurancePolicyId ?? undefined,
@@ -512,13 +522,17 @@ function assertSessionCanCreateRefill(
   session: ConversationSession
 ): asserts session is ConversationSession & {
   patientId: number;
-  selectedMedicationId: number;
+  selectedMedicationId: number | null;
   copayAmountCents: number;
 } {
+  const selectedMedicationCount =
+    parseMedicationChoices(session.selectedMedicationsJson).length +
+    (session.selectedMedicationId ? 1 : 0);
+
   if (
     !session.patientId ||
     !session.identityVerified ||
-    !session.selectedMedicationId ||
+    selectedMedicationCount === 0 ||
     (!session.selectedPharmacyId && !session.alternatePharmacy) ||
     !session.insuranceVerified ||
     session.copayAmountCents === null
@@ -618,3 +632,45 @@ const sessionSelections = {
   selectedMedication: true,
   selectedPharmacy: true
 } satisfies Prisma.ConversationSessionInclude;
+
+function parseSessionSelectedMedications(
+  session: SessionWithSelections
+): MedicationChoice[] | undefined {
+  const medications = parseMedicationChoices(session.selectedMedicationsJson);
+
+  if (medications.length > 0) {
+    return medications;
+  }
+
+  return session.selectedMedication
+    ? [toMedicationChoice(session.selectedMedication)]
+    : undefined;
+}
+
+function parseMedicationChoices(value: string | null | undefined): MedicationChoice[] {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value) as MedicationChoice[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function parsePrescriptionIds(value: string | null | undefined): number[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as number[];
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is number => typeof id === "number")
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}

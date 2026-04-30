@@ -1,10 +1,10 @@
 // This module owns the refill workflow vocabulary and step ordering.
 // UI, API routes, agents, and persistence code should import these values instead of redefining them.
 
-export const CONVERSATION_CHANNELS = ["call", "sms"] as const;
+const CONVERSATION_CHANNELS = ["call", "sms"] as const;
 export type ConversationChannel = (typeof CONVERSATION_CHANNELS)[number];
 
-export const SESSION_STATUSES = ["active", "ended", "completed"] as const;
+const SESSION_STATUSES = ["active", "ended", "completed"] as const;
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
 
 export const WORKFLOW_STEPS = [
@@ -39,15 +39,6 @@ export interface PharmacyChoice {
   isAlternate?: boolean;
 }
 
-export interface RefillCompletionPayload {
-  patient: PatientSummary;
-  medication: MedicationChoice;
-  pharmacy: PharmacyChoice;
-  insuranceVerified: boolean;
-  copayAmountCents: number;
-  completedAt: string;
-}
-
 export interface InsuranceSummary {
   insurancePolicyId: number;
   payerName: string;
@@ -69,11 +60,6 @@ export interface RefillWorkflowContext {
   copayRules: CopaySummary[];
 }
 
-export interface RefillWorkflowInput {
-  text: string;
-  receivedAt?: string;
-}
-
 export interface RefillWorkflowResult {
   updatedSession: Partial<RefillSessionState>;
   agentReply: string;
@@ -87,6 +73,7 @@ export interface RefillSessionState {
   identityVerified: boolean;
   verifiedAt?: string;
   selectedMedication?: MedicationChoice;
+  selectedMedications?: MedicationChoice[];
   selectedPharmacy?: PharmacyChoice;
   insuranceVerified: boolean;
   copayAmountCents?: number;
@@ -106,55 +93,42 @@ export function createInitialSessionState(
   };
 }
 
-export function isConversationChannel(
-  value: string
-): value is ConversationChannel {
-  return CONVERSATION_CHANNELS.includes(value as ConversationChannel);
-}
-
-export function isSessionStatus(value: string): value is SessionStatus {
-  return SESSION_STATUSES.includes(value as SessionStatus);
-}
-
 export function isWorkflowStep(value: string): value is WorkflowStep {
   return WORKFLOW_STEPS.includes(value as WorkflowStep);
 }
 
-export function getStepIndex(step: WorkflowStep): number {
+function getStepIndex(step: WorkflowStep): number {
   return WORKFLOW_STEPS.indexOf(step);
 }
 
-export function getNextWorkflowStep(
-  step: WorkflowStep
-): WorkflowStep | undefined {
-  return WORKFLOW_STEPS[getStepIndex(step) + 1];
+function hasSelectedMedication(
+  state: Pick<RefillSessionState, "selectedMedication" | "selectedMedications">
+): boolean {
+  return (
+    (state.selectedMedications?.length ?? 0) > 0 ||
+    state.selectedMedication !== undefined
+  );
 }
 
-export function hasSelectedMedication(
-  state: Pick<RefillSessionState, "selectedMedication">
-): state is { selectedMedication: MedicationChoice } {
-  return state.selectedMedication !== undefined;
-}
-
-export function hasSelectedPharmacy(
+function hasSelectedPharmacy(
   state: Pick<RefillSessionState, "selectedPharmacy">
 ): state is { selectedPharmacy: PharmacyChoice } {
   return state.selectedPharmacy !== undefined;
 }
 
-export function hasVerifiedIdentity(
+function hasVerifiedIdentity(
   state: Pick<RefillSessionState, "identityVerified" | "verifiedAt">
 ): boolean {
   return state.identityVerified && state.verifiedAt !== undefined;
 }
 
-export function hasVerifiedInsurance(
+function hasVerifiedInsurance(
   state: Pick<RefillSessionState, "insuranceVerified">
 ): boolean {
   return state.insuranceVerified;
 }
 
-export function hasCopayAmount(
+function hasCopayAmount(
   state: Pick<RefillSessionState, "copayAmountCents">
 ): state is { copayAmountCents: number } {
   return state.copayAmountCents !== undefined;
@@ -166,6 +140,7 @@ export function hasRequiredRefillFields(
     | "identityVerified"
     | "verifiedAt"
     | "selectedMedication"
+    | "selectedMedications"
     | "selectedPharmacy"
     | "insuranceVerified"
     | "copayAmountCents"

@@ -18,6 +18,7 @@ interface GeminiWorkflowJson {
   agentReply?: string;
   identityVerified?: boolean;
   selectedMedicationName?: string;
+  selectedMedicationNames?: string[];
   selectedPharmacyName?: string;
   selectedPharmacyAddress?: string;
   usePharmacyOnFile?: boolean;
@@ -53,13 +54,12 @@ export async function advanceGeminiRefillWorkflow(
     throw new Error("Gemini workflow orchestration returned unusable structured output");
   }
 
-  const selectedMedication = parsed.selectedMedicationName
-    ? findMedication(parsed.selectedMedicationName, context.activePrescriptions)
-    : state.selectedMedication;
+  const selectedMedications = resolveMedications(parsed, state, context);
+  const selectedMedication = selectedMedications[0];
   const selectedPharmacy = resolvePharmacy(parsed, state, context);
   const copayAmountCents =
-    parsed.communicateCopay && selectedMedication
-      ? resolveCopay(selectedMedication, context)
+    parsed.communicateCopay && selectedMedications.length > 0
+      ? resolveTotalCopay(selectedMedications, context)
       : state.copayAmountCents;
   const identityVerified = state.identityVerified || parsed.identityVerified === true;
   const insuranceVerified =
@@ -70,6 +70,7 @@ export async function advanceGeminiRefillWorkflow(
       ...state,
       identityVerified,
       selectedMedication,
+      selectedMedications,
       selectedPharmacy,
       insuranceVerified,
       copayAmountCents
@@ -83,6 +84,7 @@ export async function advanceGeminiRefillWorkflow(
         ? state.verifiedAt ?? input.receivedAt ?? new Date().toISOString()
         : undefined,
       selectedMedication,
+      selectedMedications,
       selectedPharmacy,
       insuranceVerified,
       copayAmountCents
@@ -98,6 +100,11 @@ export async function advanceGeminiRefillWorkflow(
       selectedMedication?.prescriptionId !== state.selectedMedication?.prescriptionId
         ? selectedMedication
         : undefined,
+    selectedMedications:
+      medicationIds(selectedMedications).join(",") !==
+      medicationIds(state.selectedMedications ?? (state.selectedMedication ? [state.selectedMedication] : [])).join(",")
+        ? selectedMedications
+        : undefined,
     selectedPharmacy:
       selectedPharmacy && selectedPharmacy.name !== state.selectedPharmacy?.name
         ? selectedPharmacy
@@ -107,6 +114,7 @@ export async function advanceGeminiRefillWorkflow(
     lastCompletedStep: getLastCompletedStep({
       identityVerified,
       selectedMedication,
+      selectedMedications,
       selectedPharmacy,
       insuranceVerified,
       copayAmountCents,
@@ -136,8 +144,9 @@ function buildGeminiWorkflowSystem(channel: GeminiChannel) {
     "You may discuss only DOB verification, medication selection, pharmacy confirmation, insurance confirmation, copay communication, and refill completion.",
     "Do not provide medical advice, policy advice, or off-scope information.",
     "Never ask for information already present in currentState.",
-    "Do not skip required fields. A refill can complete only after identity, medication, pharmacy, insurance, and copay are known.",
-    "JSON shape: {\"agentReply\":\"string\",\"identityVerified\":boolean,\"selectedMedicationName\":\"string\",\"selectedPharmacyName\":\"string\",\"selectedPharmacyAddress\":\"string\",\"usePharmacyOnFile\":boolean,\"insuranceVerified\":boolean,\"communicateCopay\":boolean,\"completeRefill\":boolean,\"nextExpectedStep\":\"verify_dob|select_medication|confirm_pharmacy|verify_insurance|notify_copay|complete_refill\"}."
+    "Do not skip required fields. A refill can complete only after identity, at least one medication, pharmacy, insurance, and copay are known.",
+    "If the patient asks for multiple active prescriptions, include all of them in selectedMedicationNames.",
+    "JSON shape: {\"agentReply\":\"string\",\"identityVerified\":boolean,\"selectedMedicationName\":\"string\",\"selectedMedicationNames\":[\"string\"],\"selectedPharmacyName\":\"string\",\"selectedPharmacyAddress\":\"string\",\"usePharmacyOnFile\":boolean,\"insuranceVerified\":boolean,\"communicateCopay\":boolean,\"completeRefill\":boolean,\"nextExpectedStep\":\"verify_dob|select_medication|confirm_pharmacy|verify_insurance|notify_copay|complete_refill\"}."
   ].join("\n");
 }
 
@@ -188,6 +197,29 @@ function parseGeminiJson(raw: string): GeminiWorkflowJson | undefined {
   }
 }
 
+function resolveMedications(
+  parsed: GeminiWorkflowJson,
+  state: RefillSessionState,
+  context: RefillWorkflowContext
+): MedicationChoice[] {
+  const names =
+    parsed.selectedMedicationNames && parsed.selectedMedicationNames.length > 0
+      ? parsed.selectedMedicationNames
+      : parsed.selectedMedicationName
+        ? [parsed.selectedMedicationName]
+        : [];
+
+  const matched = names.flatMap((name) =>
+    findMedicationsInText(name, context.activePrescriptions)
+  );
+
+  if (matched.length > 0) {
+    return dedupeMedications(matched);
+  }
+
+  return state.selectedMedications ?? (state.selectedMedication ? [state.selectedMedication] : []);
+}
+
 function findMedication(
   medicationName: string,
   options: MedicationChoice[]
@@ -198,6 +230,33 @@ function findMedication(
     const label = normalize(`${option.medicationName} ${option.strength}`);
     return label.includes(normalized) || normalized.includes(normalize(option.medicationName));
   });
+}
+
+function findMedicationsInText(
+  medicationText: string,
+  options: MedicationChoice[]
+): MedicationChoice[] {
+  const direct = findMedication(medicationText, options);
+  const normalized = normalize(medicationText);
+  const mentioned = options.filter((option) =>
+    normalized.includes(normalize(option.medicationName))
+  );
+
+  return mentioned.length > 0 ? mentioned : direct ? [direct] : [];
+}
+
+function dedupeMedications(medications: MedicationChoice[]) {
+  const byId = new Map<number, MedicationChoice>();
+
+  for (const medication of medications) {
+    byId.set(medication.prescriptionId, medication);
+  }
+
+  return [...byId.values()];
+}
+
+function medicationIds(medications: MedicationChoice[]) {
+  return medications.map((medication) => medication.prescriptionId).sort((a, b) => a - b);
 }
 
 function resolvePharmacy(
@@ -220,15 +279,27 @@ function resolvePharmacy(
   return state.selectedPharmacy;
 }
 
-function resolveCopay(
-  medication: MedicationChoice,
+function resolveTotalCopay(
+  medications: MedicationChoice[],
   context: RefillWorkflowContext
 ) {
-  return context.copayRules.find(
-    (rule) =>
-      rule.prescriptionId === medication.prescriptionId &&
-      rule.insurancePolicyId === context.insurancePolicy.insurancePolicyId
-  )?.amountCents;
+  let total = 0;
+
+  for (const medication of medications) {
+    const amount = context.copayRules.find(
+      (rule) =>
+        rule.prescriptionId === medication.prescriptionId &&
+        rule.insurancePolicyId === context.insurancePolicy.insurancePolicyId
+    )?.amountCents;
+
+    if (amount === undefined) {
+      return undefined;
+    }
+
+    total += amount;
+  }
+
+  return total;
 }
 
 function sanitizeNextStep(
@@ -242,7 +313,7 @@ function sanitizeNextStep(
   if (!state.identityVerified) {
     return "verify_dob";
   }
-  if (!state.selectedMedication) {
+  if (!hasSelectedMedicationState(state)) {
     return "select_medication";
   }
   if (!state.selectedPharmacy) {
@@ -260,6 +331,7 @@ function sanitizeNextStep(
 function getLastCompletedStep(input: {
   identityVerified: boolean;
   selectedMedication?: MedicationChoice;
+  selectedMedications?: MedicationChoice[];
   selectedPharmacy?: PharmacyChoice;
   insuranceVerified: boolean;
   copayAmountCents?: number;
@@ -277,7 +349,7 @@ function getLastCompletedStep(input: {
   if (input.selectedPharmacy) {
     return "confirm_pharmacy";
   }
-  if (input.selectedMedication) {
+  if ((input.selectedMedications?.length ?? 0) > 0 || input.selectedMedication) {
     return "select_medication";
   }
   if (input.identityVerified) {
@@ -288,4 +360,8 @@ function getLastCompletedStep(input: {
 
 function normalize(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function hasSelectedMedicationState(state: RefillSessionState) {
+  return (state.selectedMedications?.length ?? 0) > 0 || state.selectedMedication;
 }
