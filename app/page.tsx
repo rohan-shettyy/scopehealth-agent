@@ -802,7 +802,6 @@ export default function Home() {
                 <div>
                   <p className="panel-kicker">Calling</p>
                   <h2>Refill assistant</h2>
-                  <p className="target-subtitle">Patient identity pending</p>
                 </div>
               </div>
 

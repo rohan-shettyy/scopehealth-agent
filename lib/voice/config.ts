@@ -1,4 +1,4 @@
-export const GEMINI_LIVE_DEFAULT_MODEL = "gemini-3.1-flash-live-preview";
+const GEMINI_LIVE_DEFAULT_MODEL = "gemini-3.1-flash-live-preview";
 
 export interface GeminiLiveConfig {
   apiKey?: string;
@@ -8,7 +8,7 @@ export interface GeminiLiveConfig {
   endpoint: string;
 }
 
-export const GEMINI_TEXT_DEFAULT_MODEL = "gemini-3.1-flash-lite-preview";
+const GEMINI_TEXT_DEFAULT_MODEL = "gemini-3.1-flash-lite-preview";
 
 export function getGeminiLiveConfig(): GeminiLiveConfig {
   return {

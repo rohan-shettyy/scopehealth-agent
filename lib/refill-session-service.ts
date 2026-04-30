@@ -14,6 +14,7 @@ import {
   endCallSession,
   fetchSessionTranscript,
   loadAllPatientIdentitySummaries,
+  loadCallTranscriptionVocabulary,
   loadPatientWorkflowContextById,
   switchSessionToSms,
   updateConversationSessionState,
@@ -581,9 +582,10 @@ function hasMessage(transcript: SessionTranscript, content: string): boolean {
 
 async function createCallVoiceSession(sessionId: number) {
   try {
+    const vocabulary = await loadCallTranscriptionVocabulary();
     const voiceSession = await getCallVoiceProvider().createSession({
       sessionId,
-      systemInstruction: buildCallSystemInstruction()
+      systemInstruction: buildCallSystemInstruction(vocabulary)
     });
 
     if (voiceSession.provider === "local-fallback") {

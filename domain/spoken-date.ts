@@ -113,9 +113,6 @@ export function normalizeReadableTranscript(value: string): string {
     );
 }
 
-export function parseSpokenDateKey(value: string): string | undefined {
-  return findSpokenDateMatches(value)[0]?.key;
-}
 
 function findSpokenDateMatches(value: string): DateMatch[] {
   const tokens = tokenize(value);

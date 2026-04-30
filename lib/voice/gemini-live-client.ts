@@ -111,8 +111,12 @@ export class GeminiLiveClient implements VoiceProvider {
       .trim();
 
     return {
-      replyText: modelText || input.requiredReply,
-      events
+      replyText: input.requiredReply,
+      events: replaceModelTranscriptEvents(
+        input.sessionId,
+        events,
+        input.requiredReply
+      )
     };
   }
 
@@ -248,7 +252,9 @@ function sendSetup(connection: LiveConnection, systemInstruction: string) {
         systemInstruction: {
           parts: [{ text: systemInstruction }]
         },
-        inputAudioTranscription: {},
+        inputAudioTranscription: {
+          languageCode: "en-US"
+        },
         outputAudioTranscription: {}
       }
     })
@@ -256,7 +262,45 @@ function sendSetup(connection: LiveConnection, systemInstruction: string) {
 }
 
 function buildTurnPrompt(input: VoiceTurnInput): string {
-  return input.instructionPrompt;
+  return [
+    input.instructionPrompt,
+    "",
+    "Final spoken line:",
+    input.requiredReply,
+    "",
+    "Speak the final spoken line exactly. Do not add, omit, translate, localize, or replace workflow details.",
+    "The caller is speaking English. Keep all transcript and audio output in English."
+  ].join("\n");
+}
+
+function replaceModelTranscriptEvents(
+  sessionId: number,
+  events: VoiceLiveEvent[],
+  spokenText: string
+): VoiceLiveEvent[] {
+  return [
+    ...events.filter((event) => event.type !== "model_transcript"),
+    createEvent(sessionId, "model_transcript", {
+      text: spokenText
+    })
+  ];
+}
+
+function normalizeEnglishTranscript(text: string): string | undefined {
+  const normalized = text.trim().replace(/\s+/g, " ");
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  // Live sometimes emits captions in another script for short utterances.
+  // The demo is English-only, so suppress those captions instead of showing
+  // confusing non-English text while preserving the audio turn itself.
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Arabic}\p{Script=Cyrillic}]/u.test(normalized)) {
+    return undefined;
+  }
+
+  return normalized;
 }
 
 function parseGeminiServerMessage(
@@ -306,12 +350,16 @@ function parseGeminiServerMessage(
   const serverContent = raw.serverContent;
 
   if (serverContent?.inputTranscription?.text) {
-    events.push(
-      createEvent(sessionId, "user_transcript", {
-        text: serverContent.inputTranscription.text,
-        raw
-      })
-    );
+    const text = normalizeEnglishTranscript(serverContent.inputTranscription.text);
+
+    if (text) {
+      events.push(
+        createEvent(sessionId, "user_transcript", {
+          text,
+          raw
+        })
+      );
+    }
   }
 
   if (serverContent?.outputTranscription?.text) {

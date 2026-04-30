@@ -131,6 +131,30 @@ export async function loadAllPatientIdentitySummaries(): Promise<PatientSummary[
   return patients.map(toPatientSummary);
 }
 
+export async function loadCallTranscriptionVocabulary(): Promise<string[]> {
+  const [patients, prescriptions] = await Promise.all([
+    prisma.patient.findMany({
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }]
+    }),
+    prisma.prescription.findMany({
+      where: { status: "ACTIVE" },
+      orderBy: { medicationName: "asc" }
+    })
+  ]);
+
+  return [
+    ...patients.flatMap((patient) => [
+      patient.firstName,
+      patient.lastName,
+      `${patient.firstName} ${patient.lastName}`
+    ]),
+    ...prescriptions.flatMap((prescription) => [
+      prescription.medicationName,
+      `${prescription.medicationName} ${prescription.strength}`
+    ])
+  ].filter((value, index, values) => values.indexOf(value) === index);
+}
+
 export async function loadPatientWorkflowContextById(
   patientId: number
 ): Promise<RefillWorkflowContext> {

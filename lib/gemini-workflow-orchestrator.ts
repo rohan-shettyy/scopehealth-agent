@@ -7,8 +7,7 @@ import {
   type RefillWorkflowResult,
   type RefillSessionState,
   type WorkflowStep,
-  hasRequiredRefillFields,
-  isWorkflowStep
+  hasRequiredRefillFields
 } from "@/domain/workflow";
 import { getGeminiLiveConfig } from "@/lib/voice/config";
 import { generateTextWithGemini } from "@/lib/voice/gemini-text-client";
@@ -107,25 +106,23 @@ export async function advanceGeminiRefillWorkflow(
   const selectedMedications = resolveMedications(parsed, state, context);
   const selectedMedication = selectedMedications[0];
   const selectedPharmacy = resolvePharmacy(parsed, state, context);
-  const copayAmountCents =
-    parsed.communicateCopay && selectedMedications.length > 0
-      ? resolveTotalCopay(selectedMedications, context)
-      : state.copayAmountCents;
   const identityVerified = state.identityVerified || parsed.identityVerified === true;
   const insuranceVerified =
     state.insuranceVerified || parsed.insuranceVerified === true;
-  const nextExpectedStep = sanitizeNextStep(
-    parsed.nextExpectedStep,
-    {
-      ...state,
-      identityVerified,
-      selectedMedication,
-      selectedMedications,
-      selectedPharmacy,
-      insuranceVerified,
-      copayAmountCents
-    }
-  );
+  const copayAmountCents =
+    (parsed.communicateCopay || insuranceVerified) && selectedMedications.length > 0
+      ? resolveTotalCopay(selectedMedications, context)
+      : state.copayAmountCents;
+  const proposedState = {
+    ...state,
+    identityVerified,
+    selectedMedication,
+    selectedMedications,
+    selectedPharmacy,
+    insuranceVerified,
+    copayAmountCents
+  };
+  const nextExpectedStep = deriveNextStep(proposedState);
   const completeRefill =
     parsed.completeRefill === true &&
     hasRequiredRefillFields({
@@ -139,6 +136,19 @@ export async function advanceGeminiRefillWorkflow(
       insuranceVerified,
       copayAmountCents
     });
+  const agentReply = buildStepAlignedAgentReply(
+    nextExpectedStep,
+    {
+      identityVerified,
+      selectedMedication,
+      selectedMedications,
+      selectedPharmacy,
+      insuranceVerified,
+      copayAmountCents
+    },
+    context,
+    completeRefill
+  );
 
   const updatedSession: Partial<RefillSessionState> = {
     identityVerified,
@@ -176,7 +186,7 @@ export async function advanceGeminiRefillWorkflow(
 
   return {
     updatedSession,
-    agentReply: parsed.agentReply,
+    agentReply,
     isComplete: completeRefill,
     shouldCreateRefillRequest: completeRefill
   };
@@ -195,7 +205,9 @@ function buildGeminiWorkflowSystem(channel: GeminiChannel) {
     "Do not provide medical advice, policy advice, or off-scope information.",
     "Never ask for information already present in currentState.",
     "Do not skip required fields. A refill can complete only after identity, at least one medication, pharmacy, insurance, and copay are known.",
+    "If the patient is evasive, off-topic, asks unrelated questions, or refuses to answer, politely restate only the current required step.",
     "If the patient asks for multiple active prescriptions, include all of them in selectedMedicationNames.",
+    "The backend derives nextExpectedStep from persisted fields. Your nextExpectedStep must match the next missing required field.",
     "JSON shape: {\"agentReply\":\"string\",\"identityVerified\":boolean,\"selectedMedicationName\":\"string\",\"selectedMedicationNames\":[\"string\"],\"selectedPharmacyName\":\"string\",\"selectedPharmacyAddress\":\"string\",\"usePharmacyOnFile\":boolean,\"insuranceVerified\":boolean,\"communicateCopay\":boolean,\"completeRefill\":boolean,\"nextExpectedStep\":\"identify_patient|select_medication|confirm_pharmacy|verify_insurance|notify_copay|complete_refill\"}."
   ].join("\n");
 }
@@ -251,6 +263,7 @@ function buildGeminiWorkflowPrompt(
       pharmacyOnFile: context.pharmacyOnFile,
       insurancePolicy: context.insurancePolicy,
       copayRules: context.copayRules,
+      requiredCurrentStep: deriveNextStep(state),
       requiredStepOrder: WORKFLOW_STEPS
     },
     null,
@@ -387,14 +400,17 @@ function resolveTotalCopay(
   return total;
 }
 
-function sanitizeNextStep(
-  nextExpectedStep: string | undefined,
-  state: RefillSessionState
+function deriveNextStep(
+  state: Pick<
+    RefillSessionState,
+    | "identityVerified"
+    | "selectedMedication"
+    | "selectedMedications"
+    | "selectedPharmacy"
+    | "insuranceVerified"
+    | "copayAmountCents"
+  >
 ): WorkflowStep {
-  if (nextExpectedStep && isWorkflowStep(nextExpectedStep)) {
-    return nextExpectedStep;
-  }
-
   if (!state.identityVerified) {
     return "identify_patient";
   }
@@ -443,6 +459,66 @@ function getLastCompletedStep(input: {
   return undefined;
 }
 
+function buildStepAlignedAgentReply(
+  step: WorkflowStep,
+  state: Pick<
+    RefillSessionState,
+    | "identityVerified"
+    | "selectedMedication"
+    | "selectedMedications"
+    | "selectedPharmacy"
+    | "insuranceVerified"
+    | "copayAmountCents"
+  >,
+  context: RefillWorkflowContext,
+  completeRefill: boolean
+) {
+  if (completeRefill) {
+    return "Your refill request has been submitted. You are all set.";
+  }
+
+  const medicationSummary = getMedicationSummary(
+    state.selectedMedications ?? (state.selectedMedication ? [state.selectedMedication] : [])
+  );
+
+  switch (step) {
+    case "identify_patient":
+      return "Please say your full name and date of birth so I can find your patient profile.";
+    case "select_medication":
+      return `Which medication would you like to refill? Your active prescriptions are ${context.activePrescriptions
+        .map((prescription) => `${prescription.medicationName} ${prescription.strength}`)
+        .join(", ")}.`;
+    case "confirm_pharmacy":
+      return `I have ${medicationSummary} selected. Should I use ${context.pharmacyOnFile.name} at ${context.pharmacyOnFile.addressLine1}, or a different pharmacy?`;
+    case "verify_insurance":
+      return `I have the pharmacy set to ${formatPharmacy(state.selectedPharmacy)}. Is your insurance still ${context.insurancePolicy.payerName} ${context.insurancePolicy.planName}?`;
+    case "notify_copay":
+      return `Your copay for ${medicationSummary} is ${formatCurrency(state.copayAmountCents ?? 0)}. Say yes to submit the refill request.`;
+    case "complete_refill":
+      return `I have everything needed for ${medicationSummary}. Say yes to submit the refill request.`;
+  }
+}
+
+function getMedicationSummary(medications: MedicationChoice[]) {
+  return medications.length > 0
+    ? medications
+        .map((medication) => `${medication.medicationName} ${medication.strength}`)
+        .join(" and ")
+    : "your refill";
+}
+
+function formatPharmacy(pharmacy: PharmacyChoice | undefined) {
+  if (!pharmacy) {
+    return "the selected pharmacy";
+  }
+
+  return pharmacy.addressLine1 ? `${pharmacy.name} at ${pharmacy.addressLine1}` : pharmacy.name;
+}
+
+function formatCurrency(amountCents: number) {
+  return `$${(amountCents / 100).toFixed(2).replace(/\.00$/, "")}`;
+}
+
 function normalize(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -465,6 +541,8 @@ function findIdentifiedPatient(
   );
 }
 
-function hasSelectedMedicationState(state: RefillSessionState) {
+function hasSelectedMedicationState(
+  state: Pick<RefillSessionState, "selectedMedication" | "selectedMedications">
+) {
   return (state.selectedMedications?.length ?? 0) > 0 || state.selectedMedication;
 }
