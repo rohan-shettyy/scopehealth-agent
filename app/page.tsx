@@ -759,18 +759,11 @@ export default function Home() {
       <header className="app-header">
         <div>
           <p className="eyebrow">Prescription Refill Voice Agent</p>
-          <h1>Simulated call workflow</h1>
+          <h1>AI refill concierge</h1>
         </div>
-        <div className="header-actions">
-          <StatusBadge label={formatCallStatus(callStatus)} tone={callStatus} />
-          <StatusBadge
-            label={`voice ${formatVoiceStatus(voiceStatus)}`}
-            tone={voiceStatusTone(voiceStatus)}
-          />
-          <StatusBadge
-            label={session?.state.nextExpectedStep ?? "not started"}
-            tone="neutral"
-          />
+        <div className="header-signal" aria-label="Agent status">
+          <span />
+          <strong>Gemini Live</strong>
         </div>
       </header>
 
@@ -783,7 +776,7 @@ export default function Home() {
             <div className="call-screen">
               <div className="phone-status-row">
                 <span>Voice call</span>
-                <span>{session ? `Session #${session.id}` : "Ready"}</span>
+                <span>{callStatus === "idle" ? "Ready" : formatCallStatus(callStatus)}</span>
               </div>
 
               <div className="call-target">
@@ -838,15 +831,6 @@ export default function Home() {
                 >
                   New session
                 </button>
-              </div>
-
-              <div className="call-pill-row">
-                <StatusBadge label={`mic ${formatMicStatus(micStatus)}`} tone={micStatusTone(micStatus)} />
-                <StatusBadge label={`voice ${formatVoiceStatus(voiceStatus)}`} tone={voiceStatusTone(voiceStatus)} />
-                <StatusBadge
-                  label={session?.state.identityVerified ? "verified" : "identity pending"}
-                  tone={session?.state.identityVerified ? "good" : "warning"}
-                />
               </div>
 
               <details className="call-captions" open={voiceStatus !== "live"}>
@@ -941,31 +925,15 @@ export default function Home() {
         <aside className="debug-panel" aria-label="Session state">
           <div className="panel-header compact">
             <div>
-              <p className="panel-kicker">Session state</p>
-              <h2>Workflow snapshot</h2>
+              <p className="panel-kicker">Agent memory</p>
+              <h2>Refill context</h2>
             </div>
           </div>
 
           <dl className="state-list">
             <div>
-              <dt>Session</dt>
-              <dd>{session ? `#${session.id}` : "None"}</dd>
-            </div>
-            <div>
-              <dt>Channel</dt>
-              <dd>{session?.state.channel ?? "idle"}</dd>
-            </div>
-            <div>
-              <dt>Status</dt>
-              <dd>{session?.state.status ?? "idle"}</dd>
-            </div>
-            <div>
               <dt>Current step</dt>
               <dd>{session?.state.nextExpectedStep ?? "not started"}</dd>
-            </div>
-            <div>
-              <dt>Last completed</dt>
-              <dd>{session?.state.lastCompletedStep ?? "none"}</dd>
             </div>
             <div>
               <dt>Collected</dt>
@@ -998,18 +966,6 @@ export default function Home() {
                   ? formatCurrency(session.state.copayAmountCents)
                   : "pending"}
               </dd>
-            </div>
-            <div>
-              <dt>Gemini</dt>
-              <dd>{formatVoiceStatus(voiceStatus)}</dd>
-            </div>
-            <div>
-              <dt>Mic</dt>
-              <dd>{formatMicStatus(micStatus)}</dd>
-            </div>
-            <div>
-              <dt>Fallback</dt>
-              <dd>{fallbackTriggered ? "SMS fallback triggered" : "not triggered"}</dd>
             </div>
           </dl>
 
@@ -1062,15 +1018,6 @@ export default function Home() {
             )}
           </section>
 
-          <div className="channel-route-card">
-            <p className="panel-kicker">Channel route</p>
-            <strong>{primaryMode === "sms" ? "SMS is primary" : "Voice call is primary"}</strong>
-            <span>
-              {primaryMode === "sms"
-                ? "The call surface is retired for this session."
-                : "SMS remains locked until call fallback is triggered."}
-            </span>
-          </div>
         </aside>
       </section>
     </main>
