@@ -407,7 +407,10 @@ function replaceCloseTranscriptTerm(value: string, term: string): string {
   let offset = 0;
 
   for (let index = 0; index < words.length; index += 1) {
-    const maxWindow = Math.min(words.length - index, termTokens.length + 2);
+      const maxWindow = Math.min(
+        words.length - index,
+        termTokens.length + (term.length >= 10 ? 4 : 2)
+      );
 
     for (let size = maxWindow; size >= 1; size -= 1) {
       const window = words.slice(index, index + size);

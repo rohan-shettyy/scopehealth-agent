@@ -147,12 +147,14 @@ export async function loadCallTranscriptionVocabulary(): Promise<string[]> {
       patient.firstName,
       patient.lastName,
       `${patient.firstName} ${patient.lastName}`,
-      `${patient.firstName} ${patient.lastName}, spelled ${spellForSpeech(patient.firstName)} ${spellForSpeech(patient.lastName)}`
+      `${patient.firstName} ${patient.lastName}, spelled ${spellForSpeech(patient.firstName)} ${spellForSpeech(patient.lastName)}`,
+      `${patient.firstName} ${patient.lastName}, pronounced ${spaceSyllables(patient.firstName)} ${spaceSyllables(patient.lastName)}`
     ]),
     ...prescriptions.flatMap((prescription) => [
       prescription.medicationName,
       `${prescription.medicationName} ${prescription.strength}`,
-      `${prescription.medicationName}, spelled ${spellForSpeech(prescription.medicationName)}`
+      `${prescription.medicationName}, spelled ${spellForSpeech(prescription.medicationName)}`,
+      `${prescription.medicationName}, pronounced ${spaceSyllables(prescription.medicationName)}`
     ])
   ].filter((value, index, values) => values.indexOf(value) === index);
 }
@@ -184,6 +186,15 @@ function spellForSpeech(value: string): string {
     .toUpperCase()
     .split("")
     .join(" ");
+}
+
+function spaceSyllables(value: string): string {
+  return value
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[^a-zA-Z]+/g, " ")
+    .replace(/([aeiouy])([bcdfghjklmnpqrstvwxyz]{2,})/gi, "$1 $2")
+    .replace(/([bcdfghjklmnpqrstvwxyz])([aeiouy])/gi, "$1 $2")
+    .trim();
 }
 
 export async function loadPatientWorkflowContextById(

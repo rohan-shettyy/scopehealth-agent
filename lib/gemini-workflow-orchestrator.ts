@@ -103,7 +103,7 @@ export async function advanceGeminiRefillWorkflow(
     throw new Error("Gemini workflow orchestration returned unusable structured output");
   }
 
-  const selectedMedications = resolveMedications(parsed, state, context);
+  const selectedMedications = resolveMedications(parsed, state, context, input.text);
   const selectedMedication = selectedMedications[0];
   const selectedPharmacy = resolvePharmacy(parsed, state, context);
   const identityVerified = state.identityVerified || parsed.identityVerified === true;
@@ -208,6 +208,7 @@ function buildGeminiWorkflowSystem(channel: GeminiChannel) {
     "Do not skip required fields. A refill can complete only after identity, at least one medication, pharmacy, insurance, and copay are known.",
     "If the patient is evasive, off-topic, asks unrelated questions, or refuses to answer, politely restate only the current required step.",
     "If the patient asks for multiple active prescriptions, include all of them in selectedMedicationNames.",
+    "Only select medication names explicitly present in patientText. Do not infer, guess, or choose a medication just because it is active.",
     "The backend derives nextExpectedStep from persisted fields. Your nextExpectedStep must match the next missing required field.",
     "JSON shape: {\"agentReply\":\"string\",\"identityVerified\":boolean,\"selectedMedicationName\":\"string\",\"selectedMedicationNames\":[\"string\"],\"selectedPharmacyName\":\"string\",\"selectedPharmacyAddress\":\"string\",\"usePharmacyOnFile\":boolean,\"insuranceVerified\":boolean,\"communicateCopay\":boolean,\"completeRefill\":boolean,\"nextExpectedStep\":\"identify_patient|select_medication|confirm_pharmacy|verify_insurance|notify_copay|complete_refill\"}."
   ].join("\n");
@@ -299,8 +300,18 @@ function parseGeminiJson(raw: string): GeminiWorkflowJson | undefined {
 function resolveMedications(
   parsed: GeminiWorkflowJson,
   state: RefillSessionState,
-  context: RefillWorkflowContext
+  context: RefillWorkflowContext,
+  patientText: string
 ): MedicationChoice[] {
+  const explicitlyMentioned = findMedicationsInText(
+    patientText,
+    context.activePrescriptions
+  );
+
+  if (explicitlyMentioned.length > 0) {
+    return dedupeMedications(explicitlyMentioned);
+  }
+
   const names =
     parsed.selectedMedicationNames && parsed.selectedMedicationNames.length > 0
       ? parsed.selectedMedicationNames
@@ -311,9 +322,12 @@ function resolveMedications(
   const matched = names.flatMap((name) =>
     findMedicationsInText(name, context.activePrescriptions)
   );
+  const matchedExplicitlyInText = matched.filter((medication) =>
+    containsMedicationName(patientText, medication)
+  );
 
-  if (matched.length > 0) {
-    return dedupeMedications(matched);
+  if (matchedExplicitlyInText.length > 0) {
+    return dedupeMedications(matchedExplicitlyInText);
   }
 
   return state.selectedMedications ?? (state.selectedMedication ? [state.selectedMedication] : []);
@@ -342,6 +356,10 @@ function findMedicationsInText(
   );
 
   return mentioned.length > 0 ? mentioned : direct ? [direct] : [];
+}
+
+function containsMedicationName(text: string, medication: MedicationChoice): boolean {
+  return normalize(text).includes(normalize(medication.medicationName));
 }
 
 function dedupeMedications(medications: MedicationChoice[]) {

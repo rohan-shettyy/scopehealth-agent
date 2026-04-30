@@ -226,14 +226,6 @@ export default function Home() {
     };
   }, []);
 
-  useEffect(() => {
-    const sessionId = window.localStorage.getItem("refill-demo-session-id");
-
-    if (sessionId && !session) {
-      void refreshSession(Number(sessionId), { quiet: true });
-    }
-  }, [session]);
-
   async function startCall() {
     setError(null);
     setCallStatus("connecting");
@@ -415,7 +407,6 @@ export default function Home() {
     } catch (caughtError) {
       setError(`Reset cleanup warning: ${formatError(caughtError)}`);
     } finally {
-      window.localStorage.removeItem("refill-demo-session-id");
       setSession(null);
       setMessages([]);
       setPendingCaption(null);
@@ -487,7 +478,6 @@ export default function Home() {
     setSession(data.session);
     setMessages(data.messages);
     setRefillRequest(data.refillRequest);
-    window.localStorage.setItem("refill-demo-session-id", String(data.session.id));
     setVoiceStatus((current) =>
       current === "closed" || inferredVoiceStatus === "idle"
         ? current
@@ -496,7 +486,6 @@ export default function Home() {
 
     if (data.session.state.status === "completed") {
       setCallStatus("ended");
-      window.localStorage.removeItem("refill-demo-session-id");
     } else if (data.session.state.channel === "sms") {
       setCallStatus("ended");
     } else if (data.session.state.channel === "call") {
