@@ -125,6 +125,7 @@ export async function advanceGeminiRefillWorkflow(
   const nextExpectedStep = deriveNextStep(proposedState);
   const completeRefill =
     parsed.completeRefill === true &&
+    state.nextExpectedStep === "complete_refill" &&
     hasRequiredRefillFields({
       identityVerified,
       verifiedAt: identityVerified
@@ -181,7 +182,7 @@ export async function advanceGeminiRefillWorkflow(
       completeRefill
     }),
     nextExpectedStep,
-    status: completeRefill ? "completed" : undefined
+    status: completeRefill ? (channel === "sms" ? "completed" : "active") : undefined
   };
 
   return {
@@ -473,13 +474,13 @@ function buildStepAlignedAgentReply(
   context: RefillWorkflowContext,
   completeRefill: boolean
 ) {
-  if (completeRefill) {
-    return "Your refill request has been submitted. You are all set.";
-  }
-
   const medicationSummary = getMedicationSummary(
     state.selectedMedications ?? (state.selectedMedication ? [state.selectedMedication] : [])
   );
+
+  if (completeRefill) {
+    return `Your refill request for ${medicationSummary} has been submitted. You are all set.`;
+  }
 
   switch (step) {
     case "identify_patient":
@@ -495,7 +496,7 @@ function buildStepAlignedAgentReply(
     case "notify_copay":
       return `Your copay for ${medicationSummary} is ${formatCurrency(state.copayAmountCents ?? 0)}. Say yes to submit the refill request.`;
     case "complete_refill":
-      return `I have everything needed for ${medicationSummary}. Say yes to submit the refill request.`;
+      return `Your copay for ${medicationSummary} is ${formatCurrency(state.copayAmountCents ?? 0)}. Say yes to submit the refill request.`;
   }
 }
 

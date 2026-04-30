@@ -399,7 +399,7 @@ export async function createRefillRequestFromSession(
       where: { id: sessionId },
       data: {
         refillRequestId: created.id,
-        status: "COMPLETED"
+        status: session.channel === "CALL" ? "ACTIVE" : "COMPLETED"
       }
     });
 
