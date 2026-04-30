@@ -8,7 +8,7 @@ const SESSION_STATUSES = ["active", "ended", "completed"] as const;
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
 
 export const WORKFLOW_STEPS = [
-  "verify_dob",
+  "identify_patient",
   "select_medication",
   "confirm_pharmacy",
   "verify_insurance",

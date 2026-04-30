@@ -35,9 +35,18 @@ interface SessionState {
   copayAmountCents?: number;
 }
 
+interface PatientSummary {
+  id: number;
+  fullName: string;
+  dateOfBirth: string;
+  phone: string;
+}
+
 interface SessionSnapshot {
   id: number;
   sessionKey: string;
+  patientId?: number;
+  patient?: PatientSummary;
   state: SessionState;
 }
 
@@ -789,11 +798,11 @@ export default function Home() {
               </div>
 
               <div className="call-target">
-                <div className="contact-avatar" aria-hidden="true">SC</div>
+                <div className="contact-avatar" aria-hidden="true">RX</div>
                 <div>
                   <p className="panel-kicker">Calling</p>
-                  <h2>Sarah Chen</h2>
-                  <p className="target-subtitle">(555) 867-5309</p>
+                  <h2>Refill assistant</h2>
+                  <p className="target-subtitle">Patient identity pending</p>
                 </div>
               </div>
 
@@ -874,7 +883,7 @@ export default function Home() {
               <div className="sms-header">
                 <div>
                   <p className="panel-kicker">Messages</p>
-                  <h2>Sarah Chen</h2>
+                  <h2>Refill assistant</h2>
                   <p className="target-subtitle">Prescription refill SMS</p>
                 </div>
                 <div className="sms-header-actions">
@@ -940,6 +949,10 @@ export default function Home() {
           </div>
 
           <dl className="state-list">
+            <div>
+              <dt>Patient</dt>
+              <dd>{session?.patient?.fullName ?? "unidentified"}</dd>
+            </div>
             <div>
               <dt>Current step</dt>
               <dd>{session?.state.nextExpectedStep ?? "not started"}</dd>

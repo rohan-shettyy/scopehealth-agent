@@ -1,6 +1,7 @@
 import {
   WORKFLOW_STEPS,
   type MedicationChoice,
+  type PatientSummary,
   type PharmacyChoice,
   type RefillWorkflowContext,
   type RefillWorkflowResult,
@@ -26,6 +27,55 @@ interface GeminiWorkflowJson {
   communicateCopay?: boolean;
   completeRefill?: boolean;
   nextExpectedStep?: string;
+}
+
+interface GeminiIdentityJson {
+  agentReply?: string;
+  patientFullName?: string;
+  dateOfBirth?: string;
+}
+
+export interface PatientIdentityResult {
+  patient?: PatientSummary;
+  agentReply: string;
+}
+
+export async function identifyPatientForRefillWorkflow(
+  input: { text: string },
+  patients: PatientSummary[],
+  channel: GeminiChannel
+): Promise<PatientIdentityResult> {
+  const raw = await generateTextWithGemini(
+    buildPatientIdentitySystem(channel),
+    buildPatientIdentityPrompt(input.text, patients),
+    {
+      model: channel === "sms" ? getGeminiLiveConfig().textModel : undefined,
+      temperature: channel === "sms" ? 0.25 : 0.15,
+      maxOutputTokens: 350
+    }
+  );
+
+  if (!raw) {
+    throw new Error("Gemini patient identity extraction did not return a response");
+  }
+
+  const parsed = parseGeminiJson(raw) as GeminiIdentityJson | undefined;
+  const patient = findIdentifiedPatient(parsed, patients);
+
+  if (!patient) {
+    return {
+      agentReply:
+        parsed?.agentReply ??
+        "I need your full name and date of birth before I can help with a refill. Please say both together."
+    };
+  }
+
+  return {
+    patient,
+    agentReply:
+      parsed?.agentReply ??
+      `Thanks, ${patient.fullName}. I found your profile. Which medication would you like to refill?`
+  };
 }
 
 export async function advanceGeminiRefillWorkflow(
@@ -141,13 +191,48 @@ function buildGeminiWorkflowSystem(channel: GeminiChannel) {
   return [
     channelInstruction,
     "Return only valid JSON. No markdown.",
-    "You may discuss only DOB verification, medication selection, pharmacy confirmation, insurance confirmation, copay communication, and refill completion.",
+    "You may discuss only patient identification, medication selection, pharmacy confirmation, insurance confirmation, copay communication, and refill completion.",
     "Do not provide medical advice, policy advice, or off-scope information.",
     "Never ask for information already present in currentState.",
     "Do not skip required fields. A refill can complete only after identity, at least one medication, pharmacy, insurance, and copay are known.",
     "If the patient asks for multiple active prescriptions, include all of them in selectedMedicationNames.",
-    "JSON shape: {\"agentReply\":\"string\",\"identityVerified\":boolean,\"selectedMedicationName\":\"string\",\"selectedMedicationNames\":[\"string\"],\"selectedPharmacyName\":\"string\",\"selectedPharmacyAddress\":\"string\",\"usePharmacyOnFile\":boolean,\"insuranceVerified\":boolean,\"communicateCopay\":boolean,\"completeRefill\":boolean,\"nextExpectedStep\":\"verify_dob|select_medication|confirm_pharmacy|verify_insurance|notify_copay|complete_refill\"}."
+    "JSON shape: {\"agentReply\":\"string\",\"identityVerified\":boolean,\"selectedMedicationName\":\"string\",\"selectedMedicationNames\":[\"string\"],\"selectedPharmacyName\":\"string\",\"selectedPharmacyAddress\":\"string\",\"usePharmacyOnFile\":boolean,\"insuranceVerified\":boolean,\"communicateCopay\":boolean,\"completeRefill\":boolean,\"nextExpectedStep\":\"identify_patient|select_medication|confirm_pharmacy|verify_insurance|notify_copay|complete_refill\"}."
   ].join("\n");
+}
+
+function buildPatientIdentitySystem(channel: GeminiChannel) {
+  const channelInstruction =
+    channel === "call"
+      ? "You are handling the first call turn for a prescription refill voice agent."
+      : "You are handling the first SMS turn for a prescription refill assistant.";
+
+  return [
+    channelInstruction,
+    "Return only valid JSON. No markdown.",
+    "Extract the patient's full name and date of birth from the patient text.",
+    "Date of birth must be normalized as YYYY-MM-DD when possible.",
+    "Only identify a patient when both full name and DOB match one of the provided seeded patients.",
+    "If either name or DOB is missing or does not match, ask for full name and date of birth again.",
+    "Do not discuss medications, pharmacy, insurance, copay, or refill completion before identity is matched.",
+    "JSON shape: {\"agentReply\":\"string\",\"patientFullName\":\"string\",\"dateOfBirth\":\"YYYY-MM-DD\"}."
+  ].join("\n");
+}
+
+function buildPatientIdentityPrompt(patientText: string, patients: PatientSummary[]) {
+  return JSON.stringify(
+    {
+      patientText,
+      seededPatients: patients.map((patient) => ({
+        id: patient.id,
+        fullName: patient.fullName,
+        dateOfBirth: patient.dateOfBirth
+      })),
+      requiredNextAction:
+        "If matched, briefly acknowledge and ask which active medication they want to refill. If not matched, ask for full name and date of birth."
+    },
+    null,
+    2
+  );
 }
 
 function buildGeminiWorkflowPrompt(
@@ -311,7 +396,7 @@ function sanitizeNextStep(
   }
 
   if (!state.identityVerified) {
-    return "verify_dob";
+    return "identify_patient";
   }
   if (!hasSelectedMedicationState(state)) {
     return "select_medication";
@@ -353,13 +438,31 @@ function getLastCompletedStep(input: {
     return "select_medication";
   }
   if (input.identityVerified) {
-    return "verify_dob";
+    return "identify_patient";
   }
   return undefined;
 }
 
 function normalize(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function findIdentifiedPatient(
+  parsed: GeminiIdentityJson | undefined,
+  patients: PatientSummary[]
+): PatientSummary | undefined {
+  if (!parsed?.patientFullName || !parsed.dateOfBirth) {
+    return undefined;
+  }
+
+  const parsedName = normalize(parsed.patientFullName);
+  const parsedDob = parsed.dateOfBirth.trim();
+
+  return patients.find(
+    (patient) =>
+      normalize(patient.fullName) === parsedName &&
+      patient.dateOfBirth === parsedDob
+  );
 }
 
 function hasSelectedMedicationState(state: RefillSessionState) {

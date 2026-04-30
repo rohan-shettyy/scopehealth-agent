@@ -2,6 +2,102 @@ import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
+interface SeedPrescription {
+  medicationName: string;
+  strength: string;
+  directions: string;
+  copayCents: number;
+}
+
+interface SeedPatient {
+  firstName: string;
+  lastName: string;
+  dateOfBirth: string;
+  phone: string;
+  payerName: string;
+  planName: string;
+  memberId: string;
+  prescriptions: SeedPrescription[];
+}
+
+const seedPatients: SeedPatient[] = [
+  {
+    firstName: "Sarah",
+    lastName: "Chen",
+    dateOfBirth: "1985-03-15",
+    phone: "(555) 867-5309",
+    payerName: "Aetna",
+    planName: "PPO",
+    memberId: "ANT-88912",
+    prescriptions: [
+      {
+        medicationName: "Lisinopril",
+        strength: "10mg",
+        directions: "Take one tablet by mouth once daily",
+        copayCents: 500
+      },
+      {
+        medicationName: "Metformin",
+        strength: "500mg",
+        directions: "Take one tablet by mouth twice daily",
+        copayCents: 1000
+      },
+      {
+        medicationName: "Atorvastatin",
+        strength: "20mg",
+        directions: "Take one tablet by mouth once daily",
+        copayCents: 1500
+      }
+    ]
+  },
+  {
+    firstName: "Marcus",
+    lastName: "Rivera",
+    dateOfBirth: "1978-11-02",
+    phone: "(555) 222-0102",
+    payerName: "BlueCross",
+    planName: "Choice",
+    memberId: "BCR-44021",
+    prescriptions: [
+      {
+        medicationName: "Amlodipine",
+        strength: "5mg",
+        directions: "Take one tablet by mouth once daily",
+        copayCents: 800
+      },
+      {
+        medicationName: "Rosuvastatin",
+        strength: "10mg",
+        directions: "Take one tablet by mouth once daily",
+        copayCents: 1200
+      }
+    ]
+  },
+  {
+    firstName: "Priya",
+    lastName: "Patel",
+    dateOfBirth: "1990-07-22",
+    phone: "(555) 333-0198",
+    payerName: "Cigna",
+    planName: "Open Access",
+    memberId: "CGN-73204",
+    prescriptions: [
+      {
+        medicationName: "Levothyroxine",
+        strength: "50mcg",
+        directions: "Take one tablet by mouth every morning",
+        copayCents: 700
+      },
+      {
+        medicationName: "Albuterol",
+        strength: "90mcg",
+        directions: "Inhale two puffs every four to six hours as needed",
+        copayCents: 2000
+      }
+    ]
+  }
+];
+
 async function main() {
   await prisma.appSetting.upsert({
     where: { key: "setup_status" },
@@ -12,22 +108,11 @@ async function main() {
     }
   });
 
-  const patient = await prisma.patient.upsert({
-    where: { phone: "(555) 867-5309" },
-    update: {
-      firstName: "Sarah",
-      lastName: "Chen",
-      dateOfBirth: new Date("1985-03-15T00:00:00.000Z")
-    },
-    create: {
-      firstName: "Sarah",
-      lastName: "Chen",
-      dateOfBirth: new Date("1985-03-15T00:00:00.000Z"),
-      phone: "(555) 867-5309"
-    }
+  await prisma.refillRequest.deleteMany({
+    where: { status: "DRAFT" }
   });
 
-  const pharmacy = await prisma.pharmacy.upsert({
+  await prisma.pharmacy.upsert({
     where: {
       name_addressLine1: {
         name: "CVS Pharmacy",
@@ -41,98 +126,65 @@ async function main() {
     }
   });
 
+  for (const seedPatient of seedPatients) {
+    await seedPatientProfile(seedPatient);
+  }
+}
+
+async function seedPatientProfile(seedPatient: SeedPatient) {
+  const patient = await prisma.patient.upsert({
+    where: { phone: seedPatient.phone },
+    update: {
+      firstName: seedPatient.firstName,
+      lastName: seedPatient.lastName,
+      dateOfBirth: new Date(`${seedPatient.dateOfBirth}T00:00:00.000Z`)
+    },
+    create: {
+      firstName: seedPatient.firstName,
+      lastName: seedPatient.lastName,
+      dateOfBirth: new Date(`${seedPatient.dateOfBirth}T00:00:00.000Z`),
+      phone: seedPatient.phone
+    }
+  });
+
   const insurancePolicy = await prisma.insurancePolicy.upsert({
-    where: { memberId: "ANT-88912" },
+    where: { memberId: seedPatient.memberId },
     update: {
       patientId: patient.id,
-      payerName: "Aetna",
-      planName: "PPO",
+      payerName: seedPatient.payerName,
+      planName: seedPatient.planName,
       active: true
     },
     create: {
       patientId: patient.id,
-      payerName: "Aetna",
-      planName: "PPO",
-      memberId: "ANT-88912",
+      payerName: seedPatient.payerName,
+      planName: seedPatient.planName,
+      memberId: seedPatient.memberId,
       active: true
     }
   });
 
-  const prescriptions = await Promise.all([
-    prisma.prescription.upsert({
+  for (const seedPrescription of seedPatient.prescriptions) {
+    const prescription = await prisma.prescription.upsert({
       where: {
         patientId_medicationName_strength: {
           patientId: patient.id,
-          medicationName: "Lisinopril",
-          strength: "10mg"
+          medicationName: seedPrescription.medicationName,
+          strength: seedPrescription.strength
         }
       },
       update: {
-        directions: "Take one tablet by mouth once daily",
+        directions: seedPrescription.directions,
         status: "ACTIVE"
       },
       create: {
         patientId: patient.id,
-        medicationName: "Lisinopril",
-        strength: "10mg",
-        directions: "Take one tablet by mouth once daily",
+        medicationName: seedPrescription.medicationName,
+        strength: seedPrescription.strength,
+        directions: seedPrescription.directions,
         status: "ACTIVE"
       }
-    }),
-    prisma.prescription.upsert({
-      where: {
-        patientId_medicationName_strength: {
-          patientId: patient.id,
-          medicationName: "Metformin",
-          strength: "500mg"
-        }
-      },
-      update: {
-        directions: "Take one tablet by mouth twice daily",
-        status: "ACTIVE"
-      },
-      create: {
-        patientId: patient.id,
-        medicationName: "Metformin",
-        strength: "500mg",
-        directions: "Take one tablet by mouth twice daily",
-        status: "ACTIVE"
-      }
-    }),
-    prisma.prescription.upsert({
-      where: {
-        patientId_medicationName_strength: {
-          patientId: patient.id,
-          medicationName: "Atorvastatin",
-          strength: "20mg"
-        }
-      },
-      update: {
-        directions: "Take one tablet by mouth once daily",
-        status: "ACTIVE"
-      },
-      create: {
-        patientId: patient.id,
-        medicationName: "Atorvastatin",
-        strength: "20mg",
-        directions: "Take one tablet by mouth once daily",
-        status: "ACTIVE"
-      }
-    })
-  ]);
-
-  const copaysByMedication = new Map([
-    ["Lisinopril", 500],
-    ["Metformin", 1000],
-    ["Atorvastatin", 1500]
-  ]);
-
-  for (const prescription of prescriptions) {
-    const amountCents = copaysByMedication.get(prescription.medicationName);
-
-    if (amountCents === undefined) {
-      continue;
-    }
+    });
 
     await prisma.copayRule.upsert({
       where: {
@@ -141,39 +193,14 @@ async function main() {
           prescriptionId: prescription.id
         }
       },
-      update: { amountCents },
+      update: { amountCents: seedPrescription.copayCents },
       create: {
         insurancePolicyId: insurancePolicy.id,
         prescriptionId: prescription.id,
-        amountCents
+        amountCents: seedPrescription.copayCents
       }
     });
   }
-
-  await prisma.refillRequest.upsert({
-    where: { id: 1 },
-    update: {
-      patientId: patient.id,
-      prescriptionId: null,
-      pharmacyId: pharmacy.id,
-      insurancePolicyId: insurancePolicy.id,
-      status: "DRAFT",
-      identityVerified: false,
-      verifiedAt: null,
-      insuranceVerified: false,
-      copayAmountCents: null,
-      lastCompletedStep: null,
-      nextExpectedStep: "verify_identity"
-    },
-    create: {
-      id: 1,
-      patientId: patient.id,
-      pharmacyId: pharmacy.id,
-      insurancePolicyId: insurancePolicy.id,
-      status: "DRAFT",
-      nextExpectedStep: "verify_identity"
-    }
-  });
 }
 
 main()

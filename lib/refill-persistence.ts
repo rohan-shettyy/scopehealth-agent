@@ -61,6 +61,7 @@ export interface ConversationSessionSnapshot {
   id: number;
   sessionKey: string;
   patientId?: number;
+  patient?: PatientSummary;
   refillRequestId?: number;
   state: RefillSessionState;
   createdAt: string;
@@ -86,7 +87,19 @@ export interface RefillRequestSnapshot {
   updatedAt: string;
 }
 
+export class DuplicateRefillRequestError extends Error {
+  constructor(public readonly medicationNames: string[]) {
+    super(
+      medicationNames.length === 1
+        ? `A refill request already exists for ${medicationNames[0]}. I cannot create a duplicate request.`
+        : `A refill request already exists for ${medicationNames.join(", ")}. I cannot create a duplicate request.`
+    );
+    this.name = "DuplicateRefillRequestError";
+  }
+}
+
 type SessionWithSelections = ConversationSession & {
+  patient: Patient | null;
   selectedMedication: Prescription | null;
   selectedPharmacy: Pharmacy | null;
 };
@@ -108,6 +121,50 @@ type PatientWithWorkflowData = Patient & {
 
 export async function loadDemoPatientWorkflowContext(): Promise<RefillWorkflowContext> {
   return loadPatientWorkflowContextByPhone(DEMO_PATIENT_PHONE);
+}
+
+export async function loadAllPatientIdentitySummaries(): Promise<PatientSummary[]> {
+  const patients = await prisma.patient.findMany({
+    orderBy: [{ lastName: "asc" }, { firstName: "asc" }]
+  });
+
+  return patients.map(toPatientSummary);
+}
+
+export async function loadPatientWorkflowContextById(
+  patientId: number
+): Promise<RefillWorkflowContext> {
+  const [patient, pharmacyOnFile] = await Promise.all([
+    prisma.patient.findUnique({
+      where: { id: patientId },
+      include: {
+        prescriptions: {
+          where: { status: "ACTIVE" },
+          orderBy: { medicationName: "asc" }
+        },
+        insurancePolicies: {
+          where: { active: true },
+          include: {
+            copayRules: true
+          },
+          take: 1
+        }
+      }
+    }),
+    prisma.pharmacy.findFirst({
+      orderBy: { id: "asc" }
+    })
+  ]);
+
+  if (!patient) {
+    throw new Error(`No patient found for id ${patientId}`);
+  }
+
+  if (!pharmacyOnFile) {
+    throw new Error("No pharmacy on file found for demo workflow");
+  }
+
+  return buildWorkflowContext(patient, pharmacyOnFile);
 }
 
 export async function loadPatientWorkflowContextByPhone(
@@ -217,6 +274,23 @@ export async function updateConversationSessionState(
   return toSessionSnapshot(session);
 }
 
+export async function attachPatientToConversationSession(
+  sessionId: number,
+  patientId: number,
+  updatedState: Partial<RefillSessionState>
+): Promise<ConversationSessionSnapshot> {
+  const session = await prisma.conversationSession.update({
+    where: { id: sessionId },
+    data: {
+      patient: { connect: { id: patientId } },
+      ...toSessionUpdateData(updatedState)
+    },
+    include: sessionSelections
+  });
+
+  return toSessionSnapshot(session);
+}
+
 export async function endCallSession(
   sessionId: number
 ): Promise<ConversationSessionSnapshot> {
@@ -268,6 +342,7 @@ export async function createRefillRequestFromSession(
     }
 
     assertSessionCanCreateRefill(session);
+    await assertNoDuplicateRefillRequests(tx, session);
 
     const created = await tx.refillRequest.create({
       data: {
@@ -370,12 +445,13 @@ function toSessionSnapshot(
 ): ConversationSessionSnapshot {
   const lastCompletedStep = toWorkflowStep(session.lastCompletedStep);
   const nextExpectedStep =
-    toWorkflowStep(session.nextExpectedStep) ?? "verify_dob";
+    toWorkflowStep(session.nextExpectedStep) ?? "identify_patient";
 
   return {
     id: session.id,
     sessionKey: session.sessionKey,
     patientId: session.patientId ?? undefined,
+    patient: session.patient ? toPatientSummary(session.patient) : undefined,
     refillRequestId: session.refillRequestId ?? undefined,
     state: {
       channel: fromDbChannel(session.channel),
@@ -560,6 +636,63 @@ async function findActiveInsurancePolicyId(
   return policy.id;
 }
 
+async function assertNoDuplicateRefillRequests(
+  tx: Prisma.TransactionClient,
+  session: ConversationSession & { patientId: number }
+) {
+  const requestedIds = getSessionPrescriptionIds(session);
+
+  if (requestedIds.length === 0) {
+    return;
+  }
+
+  const existingRequests = await tx.refillRequest.findMany({
+    where: {
+      patientId: session.patientId,
+      status: { in: ["IN_PROGRESS", "SUBMITTED", "COMPLETED"] }
+    }
+  });
+
+  const duplicateIds = new Set<number>();
+
+  for (const request of existingRequests) {
+    const existingIds = [
+      ...(request.prescriptionId ? [request.prescriptionId] : []),
+      ...(parsePrescriptionIds(request.prescriptionIdsJson) ?? [])
+    ];
+
+    for (const id of existingIds) {
+      if (requestedIds.includes(id)) {
+        duplicateIds.add(id);
+      }
+    }
+  }
+
+  if (duplicateIds.size === 0) {
+    return;
+  }
+
+  const prescriptions = await tx.prescription.findMany({
+    where: { id: { in: [...duplicateIds] } },
+    orderBy: { medicationName: "asc" }
+  });
+
+  throw new DuplicateRefillRequestError(
+    prescriptions.map((prescription) => prescription.medicationName)
+  );
+}
+
+function getSessionPrescriptionIds(session: ConversationSession): number[] {
+  const selectedIds = parseMedicationChoices(session.selectedMedicationsJson).map(
+    (medication) => medication.prescriptionId
+  );
+
+  return [
+    ...(session.selectedMedicationId ? [session.selectedMedicationId] : []),
+    ...selectedIds
+  ].filter((id, index, ids) => ids.indexOf(id) === index);
+}
+
 function createSessionKey(channel: ConversationChannel): string {
   return `${channel}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -629,6 +762,7 @@ function fromDbMessageRole(role: DbMessageRole): ConversationMessageRole {
 }
 
 const sessionSelections = {
+  patient: true,
   selectedMedication: true,
   selectedPharmacy: true
 } satisfies Prisma.ConversationSessionInclude;

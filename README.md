@@ -1,8 +1,6 @@
 # Prescription Refill Voice Agent
 
-Local demo web app scaffold for a future prescription refill voice agent.
-
-This repository currently contains the project foundation only. It does not include telephony, SMS, or refill workflow logic yet.
+Local demo web app for a prescription refill voice agent with browser-simulated call mode and SMS fallback.
 
 ## Tech Stack
 
@@ -48,7 +46,7 @@ This repository currently contains the project foundation only. It does not incl
    npm run seed
    ```
 
-   The seed command creates the demo patient Sarah Chen, three active prescriptions, the CVS Pharmacy on file, an Aetna PPO insurance policy, copay rules for each medication, and a draft refill request for later workflow development.
+   The seed command creates several demo patients, each with their own active prescriptions, insurance policy, and copay rules, plus the CVS Pharmacy on file.
 
 6. Start the local development server:
 
@@ -82,17 +80,25 @@ This repository currently contains the project foundation only. It does not incl
 Running `npm run seed` creates or updates:
 
 - Patient: Sarah Chen, DOB 1985-03-15, phone `(555) 867-5309`
-- Prescriptions:
+  Prescriptions:
   - Lisinopril 10mg, once daily, $5 copay
   - Metformin 500mg, twice daily, $10 copay
   - Atorvastatin 20mg, once daily, $15 copay
+- Patient: Marcus Rivera, DOB 1978-11-02, phone `(555) 222-0102`
+  Prescriptions:
+  - Amlodipine 5mg, once daily, $8 copay
+  - Rosuvastatin 10mg, once daily, $12 copay
+- Patient: Priya Patel, DOB 1990-07-22, phone `(555) 333-0198`
+  Prescriptions:
+  - Levothyroxine 50mcg, every morning, $7 copay
+  - Albuterol 90mcg, as needed, $20 copay
 - Pharmacy: CVS Pharmacy, 1234 Main St
-- Insurance policy: Aetna PPO, Member ID `ANT-88912`
-- Refill request workflow starts with `nextExpectedStep` set to `verify_dob`
+- Insurance policies: Aetna PPO for Sarah, BlueCross Choice for Marcus, Cigna Open Access for Priya
+- New call sessions start unidentified with `nextExpectedStep` set to `identify_patient`
 
 ## Persistence Layer
 
-The server-side persistence helpers live in `lib/refill-persistence.ts`. They load the demo patient context, create and update conversation sessions, append transcript messages, switch call sessions to SMS, end call sessions, create refill requests after workflow completion, and fetch a full session snapshot for future UI/debug panels.
+The server-side persistence helpers live in `lib/refill-persistence.ts`. They load patient identity and workflow context, create and update conversation sessions, append transcript messages, switch call sessions to SMS, end call sessions, prevent duplicate refill requests for the same prescription, create refill requests after workflow completion, and fetch a full session snapshot for UI/debug panels.
 
 ## Workflow API
 

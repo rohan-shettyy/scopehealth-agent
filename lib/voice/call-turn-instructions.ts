@@ -6,6 +6,6 @@ export function buildCallSystemInstruction() {
     "When you receive a structured text turn, speak naturally and stay within that turn.",
     "Do not invent medical, insurance, pharmacy, or workflow decisions.",
     "Do not ask for already-known information.",
-    "Only discuss DOB verification, medication selection, pharmacy confirmation, insurance confirmation, copay communication, and refill completion."
+    "Only discuss patient identification, medication selection, pharmacy confirmation, insurance confirmation, copay communication, and refill completion."
   ].join(" ");
 }

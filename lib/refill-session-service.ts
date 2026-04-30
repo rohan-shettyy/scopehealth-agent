@@ -1,14 +1,20 @@
 import { normalizeReadableTranscript } from "@/domain/spoken-date";
 import type { RefillSessionState, WorkflowStep } from "@/domain/workflow";
 import { buildCallSystemInstruction } from "@/lib/voice/call-turn-instructions";
-import { advanceGeminiRefillWorkflow } from "@/lib/gemini-workflow-orchestrator";
 import {
+  advanceGeminiRefillWorkflow,
+  identifyPatientForRefillWorkflow
+} from "@/lib/gemini-workflow-orchestrator";
+import {
+  DuplicateRefillRequestError,
   appendConversationMessage,
+  attachPatientToConversationSession,
   createConversationSession,
   createRefillRequestFromSession,
   endCallSession,
   fetchSessionTranscript,
-  loadDemoPatientWorkflowContext,
+  loadAllPatientIdentitySummaries,
+  loadPatientWorkflowContextById,
   switchSessionToSms,
   updateConversationSessionState,
   type ConversationSessionSnapshot,
@@ -19,7 +25,7 @@ import { getCallVoiceProvider } from "@/lib/voice/provider";
 import { generateTextWithGemini } from "@/lib/voice/gemini-text-client";
 import type { VoiceLiveEvent } from "@/lib/voice/types";
 
-export interface WorkflowInteractionResult {
+interface WorkflowInteractionResult {
   session: ConversationSessionSnapshot;
   agentReply: string;
   isComplete: boolean;
@@ -27,18 +33,16 @@ export interface WorkflowInteractionResult {
   voiceEvents?: VoiceLiveEvent[];
 }
 
-export interface StartCallResult extends SessionTranscript {
+interface StartCallResult extends SessionTranscript {
   voiceEvents?: VoiceLiveEvent[];
 }
 
 export async function startSimulatedCall(): Promise<StartCallResult> {
-  const context = await loadDemoPatientWorkflowContext();
   const session = await createConversationSession({
-    patientId: context.patient.id,
     channel: "call"
   });
   const agentReply =
-    "Hi, this is the prescription refill assistant. Please provide Sarah Chen's date of birth to get started.";
+    "Hi, this is the prescription refill assistant. Please say your full name and date of birth to get started.";
 
   await createCallVoiceSession(session.id);
   const voiceResult = await phraseCallReply(
@@ -47,7 +51,7 @@ export async function startSimulatedCall(): Promise<StartCallResult> {
     agentReply,
     [
       "The call just connected.",
-      "Greet Sarah Chen and ask for her date of birth to begin the refill.",
+      "Greet the caller and ask for their full name and date of birth to identify their patient profile.",
       "Keep it brief and natural for a phone call."
     ].join("\n")
   );
@@ -136,7 +140,9 @@ async function repromptAfterNoSpeech(
   audioEvents: VoiceLiveEvent[]
 ): Promise<WorkflowInteractionResult> {
   const transcript = await fetchSessionTranscript(sessionId);
-  const context = await loadDemoPatientWorkflowContext();
+  const context = transcript.session.patientId
+    ? await loadPatientWorkflowContextById(transcript.session.patientId)
+    : undefined;
   const reprompt = getNoSpeechReprompt(transcript.session.state);
   const voiceResult = await phraseCallReply(
     sessionId,
@@ -147,12 +153,18 @@ async function repromptAfterNoSpeech(
       "Do not advance the refill workflow.",
       "Briefly re-prompt for the current missing information.",
       `Current workflow state: ${JSON.stringify(transcript.session.state)}`,
-      `Patient: ${context.patient.fullName}`,
-      `Available medications: ${context.activePrescriptions
-        .map((prescription) => `${prescription.medicationName} ${prescription.strength}`)
-        .join(", ")}`,
-      `Pharmacy on file: ${context.pharmacyOnFile.name}, ${context.pharmacyOnFile.addressLine1}`,
-      `Insurance: ${context.insurancePolicy.payerName} ${context.insurancePolicy.planName}`,
+      context ? `Patient: ${context.patient.fullName}` : "Patient: unidentified",
+      context
+        ? `Available medications: ${context.activePrescriptions
+            .map((prescription) => `${prescription.medicationName} ${prescription.strength}`)
+            .join(", ")}`
+        : "Available medications: unknown until patient identity is verified",
+      context
+        ? `Pharmacy on file: ${context.pharmacyOnFile.name}, ${context.pharmacyOnFile.addressLine1}`
+        : "Pharmacy on file: unknown until patient identity is verified",
+      context
+        ? `Insurance: ${context.insurancePolicy.payerName} ${context.insurancePolicy.planName}`
+        : "Insurance: unknown until patient identity is verified",
       `Required reply meaning: ${reprompt}`
     ].join("\n")
   );
@@ -248,8 +260,12 @@ export async function triggerSmsFallback(
     transcript.session.state.status === "active"
       ? transcript.session
       : await switchSessionToSms(sessionId);
-  const context = await loadDemoPatientWorkflowContext();
-  const agentReply = await getGeminiSmsContinuationPrompt(session.state, context);
+  const agentReply = session.patientId
+    ? await getGeminiSmsContinuationPrompt(
+        session.state,
+        await loadPatientWorkflowContextById(session.patientId)
+      )
+    : "Looks like we got disconnected. To continue your refill by text, please reply with your full name and date of birth.";
 
   if (!hasMessage(await fetchSessionTranscript(sessionId), agentReply)) {
     await appendConversationMessage({
@@ -289,7 +305,11 @@ async function submitWorkflowInput(
     content: text
   });
 
-  const context = await loadDemoPatientWorkflowContext();
+  if (!transcript.session.patientId || !transcript.session.state.identityVerified) {
+    return identifyPatientForSession(sessionId, text, expectedChannel);
+  }
+
+  const context = await loadPatientWorkflowContextById(transcript.session.patientId);
   const firstResult = await advanceGeminiRefillWorkflow(
     transcript.session.state,
     {
@@ -327,24 +347,158 @@ async function submitWorkflowInput(
   });
   await persistVoiceEvents(sessionId, voiceResult.events);
 
-  const refillRequest = result.shouldCreateRefillRequest
-    ? await createRefillRequestFromSession(sessionId)
-    : undefined;
+  const completion = result.shouldCreateRefillRequest
+    ? await createRefillRequestWithDuplicateDenial(
+        sessionId,
+        expectedChannel,
+        context
+      )
+    : { voiceEvents: [] };
+
+  const finalVoiceEvents = [...voiceResult.events, ...(completion.voiceEvents ?? [])];
 
   return {
-    session: refillRequest
+    session: completion.refillRequest || completion.denialReply
       ? (await fetchSessionTranscript(sessionId)).session
       : result.session,
+    agentReply: completion.denialReply ?? voiceResult.replyText,
+    isComplete: completion.denialReply ? false : result.isComplete,
+    refillRequest: completion.refillRequest,
+    voiceEvents: finalVoiceEvents
+  };
+}
+
+async function identifyPatientForSession(
+  sessionId: number,
+  text: string,
+  expectedChannel: "call" | "sms"
+): Promise<WorkflowInteractionResult> {
+  const patients = await loadAllPatientIdentitySummaries();
+  const identity = await identifyPatientForRefillWorkflow(
+    { text },
+    patients,
+    expectedChannel
+  );
+  const now = new Date().toISOString();
+
+  if (!identity.patient) {
+    const voiceResult =
+      expectedChannel === "call"
+        ? await phraseCallReply(
+            sessionId,
+            text,
+            identity.agentReply,
+            [
+              "The caller has not been matched to a patient profile yet.",
+              "Ask only for their full name and date of birth.",
+              `Patient said: ${text}`,
+              `Say this meaning, with natural phone phrasing: ${identity.agentReply}`
+            ].join("\n")
+          )
+        : { replyText: identity.agentReply, events: [] };
+
+    await appendConversationMessage({
+      sessionId,
+      role: "assistant",
+      content: voiceResult.replyText
+    });
+    await persistVoiceEvents(sessionId, voiceResult.events);
+
+    return {
+      session: (await fetchSessionTranscript(sessionId)).session,
+      agentReply: voiceResult.replyText,
+      isComplete: false,
+      voiceEvents: voiceResult.events
+    };
+  }
+
+  const context = await loadPatientWorkflowContextById(identity.patient.id);
+  const updatedSession = await attachPatientToConversationSession(
+    sessionId,
+    identity.patient.id,
+    {
+      identityVerified: true,
+      verifiedAt: now,
+      lastCompletedStep: "identify_patient",
+      nextExpectedStep: "select_medication"
+    }
+  );
+  const medicationList = context.activePrescriptions
+    .map((prescription) => `${prescription.medicationName} ${prescription.strength}`)
+    .join(", ");
+  const requiredReply = `Thanks, ${context.patient.fullName}. I found your profile. Which medication would you like to refill? Your active prescriptions are ${medicationList}.`;
+  const voiceResult =
+    expectedChannel === "call"
+      ? await phraseCallReplyForGeminiState(
+          sessionId,
+          text,
+          requiredReply,
+          updatedSession.state,
+          context
+        )
+      : { replyText: requiredReply, events: [] };
+
+  await appendConversationMessage({
+    sessionId,
+    role: "assistant",
+    content: voiceResult.replyText
+  });
+  await persistVoiceEvents(sessionId, voiceResult.events);
+
+  return {
+    session: updatedSession,
     agentReply: voiceResult.replyText,
-    isComplete: result.isComplete,
-    refillRequest,
+    isComplete: false,
     voiceEvents: voiceResult.events
   };
 }
 
+async function createRefillRequestWithDuplicateDenial(
+  sessionId: number,
+  expectedChannel: "call" | "sms",
+  context: Awaited<ReturnType<typeof loadPatientWorkflowContextById>>
+): Promise<{
+  refillRequest?: RefillRequestSnapshot;
+  denialReply?: string;
+  voiceEvents?: VoiceLiveEvent[];
+}> {
+  try {
+    return { refillRequest: await createRefillRequestFromSession(sessionId) };
+  } catch (error) {
+    if (!(error instanceof DuplicateRefillRequestError)) {
+      throw error;
+    }
+
+    const denialReply = error.message;
+    await updateConversationSessionState(sessionId, { status: "active" });
+    const voiceResult =
+      expectedChannel === "call"
+        ? await phraseCallReplyForGeminiState(
+            sessionId,
+            "The requested prescription already has an existing refill request.",
+            denialReply,
+            (await fetchSessionTranscript(sessionId)).session.state,
+            context
+          )
+        : { replyText: denialReply, events: [] };
+
+    await appendConversationMessage({
+      sessionId,
+      role: "assistant",
+      content: voiceResult.replyText
+    });
+    await persistVoiceEvents(sessionId, voiceResult.events);
+
+    return {
+      denialReply: voiceResult.replyText,
+      voiceEvents: voiceResult.events
+    };
+  }
+}
+
 async function getGeminiSmsContinuationPrompt(
   state: RefillSessionState,
-  context: Awaited<ReturnType<typeof loadDemoPatientWorkflowContext>>
+  context: Awaited<ReturnType<typeof loadPatientWorkflowContextById>>
 ) {
   const reply = await generateTextWithGemini(
     [
@@ -382,10 +536,10 @@ async function getGeminiSmsContinuationPrompt(
 
 function getNextMissingStep(state: RefillSessionState): WorkflowStep {
   if (!state.identityVerified) {
-    return "verify_dob";
+    return "identify_patient";
   }
 
-  if (!state.selectedMedication) {
+  if (!state.selectedMedication && !state.selectedMedications?.length) {
     return "select_medication";
   }
 
@@ -406,8 +560,8 @@ function getNextMissingStep(state: RefillSessionState): WorkflowStep {
 
 function getNoSpeechReprompt(state: RefillSessionState): string {
   switch (getNextMissingStep(state)) {
-    case "verify_dob":
-      return "I did not catch that. Please say Sarah Chen's date of birth.";
+    case "identify_patient":
+      return "I did not catch that. Please say your full name and date of birth.";
     case "select_medication":
       return "I did not catch that. Which medication would you like to refill?";
     case "confirm_pharmacy":
@@ -468,7 +622,7 @@ async function phraseCallReplyForGeminiState(
   userText: string,
   geminiReply: string,
   state: RefillSessionState,
-  context: Awaited<ReturnType<typeof loadDemoPatientWorkflowContext>>
+  context: Awaited<ReturnType<typeof loadPatientWorkflowContextById>>
 ) {
   return phraseCallReply(
     sessionId,
