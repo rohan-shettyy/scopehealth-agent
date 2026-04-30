@@ -134,7 +134,6 @@ export default function Home() {
   const utteranceStartedAtRef = useRef<number | null>(null);
   const preSpeechChunksRef = useRef<Int16Array[]>([]);
   const utteranceChunksRef = useRef<Int16Array[]>([]);
-  const queuedUtteranceChunksRef = useRef<Int16Array[][]>([]);
   const playbackSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const playbackResolveRef = useRef<(() => void) | null>(null);
   const playbackContextRef = useRef<AudioContext | null>(null);
@@ -521,12 +520,14 @@ export default function Home() {
     hasSpeechRef.current = false;
     silenceStartedAtRef.current = null;
     preSpeechChunksRef.current = [];
-    queuedUtteranceChunksRef.current = [];
 
     workletNode.port.onmessage = (event: MessageEvent<Float32Array>) => {
       if (
         !activeSessionIdRef.current ||
-        mutedRef.current
+        mutedRef.current ||
+        agentSpeakingRef.current ||
+        processingAudioRef.current ||
+        audioPostInFlightRef.current
       ) {
         return;
       }
@@ -539,7 +540,7 @@ export default function Home() {
         audioContext.sampleRate,
         16000
       );
-      const speechDetected = rms > (agentSpeakingRef.current ? 0.03 : 0.01);
+      const speechDetected = rms > 0.01;
 
       if (pcm.length > 0 && !hasSpeechRef.current) {
         preSpeechChunksRef.current.push(pcm);
@@ -550,10 +551,6 @@ export default function Home() {
       }
 
       if (speechDetected) {
-        if (agentSpeakingRef.current) {
-          interruptAgentPlayback();
-        }
-
         hasSpeechRef.current = true;
         utteranceStartedAtRef.current ??= now;
         silenceStartedAtRef.current = null;
@@ -572,11 +569,7 @@ export default function Home() {
           (utteranceStartedAtRef.current !== null &&
             now - utteranceStartedAtRef.current > 15000)
         ) {
-          if (processingAudioRef.current || audioPostInFlightRef.current) {
-            queueCurrentAudioTurn();
-          } else {
-            void finishAudioTurn();
-          }
+          void finishAudioTurn();
           return;
         }
       }
@@ -600,14 +593,11 @@ export default function Home() {
 
     if (
       !sessionId ||
+      processingAudioRef.current ||
+      audioPostInFlightRef.current ||
       !hasSpeechRef.current ||
       audioChunks.length === 0
     ) {
-      return;
-    }
-
-    if (processingAudioRef.current || audioPostInFlightRef.current) {
-      queueCurrentAudioTurn();
       return;
     }
 
@@ -666,44 +656,7 @@ export default function Home() {
     } finally {
       processingAudioRef.current = false;
       audioPostInFlightRef.current = false;
-      void processQueuedAudioTurn();
     }
-  }
-
-  function queueCurrentAudioTurn() {
-    const chunks = utteranceChunksRef.current;
-
-    if (chunks.length > 0) {
-      queuedUtteranceChunksRef.current.push([...chunks]);
-    }
-
-    hasSpeechRef.current = false;
-    silenceStartedAtRef.current = null;
-    utteranceStartedAtRef.current = null;
-    preSpeechChunksRef.current = [];
-    utteranceChunksRef.current = [];
-    setAudioNotice("Heard interruption; queued response");
-  }
-
-  async function processQueuedAudioTurn() {
-    if (
-      processingAudioRef.current ||
-      audioPostInFlightRef.current ||
-      queuedUtteranceChunksRef.current.length === 0 ||
-      !activeSessionIdRef.current
-    ) {
-      return;
-    }
-
-    const nextChunks = queuedUtteranceChunksRef.current.shift();
-
-    if (!nextChunks || nextChunks.length === 0) {
-      return;
-    }
-
-    utteranceChunksRef.current = nextChunks;
-    hasSpeechRef.current = true;
-    await finishAudioTurn();
   }
 
   async function stopAudioCapture() {
@@ -715,7 +668,6 @@ export default function Home() {
     silenceStartedAtRef.current = null;
     utteranceStartedAtRef.current = null;
     utteranceChunksRef.current = [];
-    queuedUtteranceChunksRef.current = [];
     interruptAgentPlayback();
 
     workletNodeRef.current?.disconnect();
