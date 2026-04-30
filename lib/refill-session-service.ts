@@ -470,6 +470,15 @@ async function createRefillRequestWithDuplicateDenial(
       throw error;
     }
 
+    const transcript = await fetchSessionTranscript(sessionId);
+
+    if (transcript.refillRequest) {
+      return {
+        refillRequest: transcript.refillRequest,
+        voiceEvents: []
+      };
+    }
+
     const denialReply = error.message;
     await updateConversationSessionState(sessionId, { status: "active" });
     const voiceResult =
