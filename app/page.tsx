@@ -125,6 +125,7 @@ export default function Home() {
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const activeSessionIdRef = useRef<number | null>(null);
+  const callStatusRef = useRef<CallStatus>("idle");
   const mutedRef = useRef(false);
   const processingAudioRef = useRef(false);
   const audioPostInFlightRef = useRef(false);
@@ -214,6 +215,10 @@ export default function Home() {
   useEffect(() => {
     mutedRef.current = isMuted;
   }, [isMuted]);
+
+  useEffect(() => {
+    callStatusRef.current = callStatus;
+  }, [callStatus]);
 
   useEffect(() => {
     return () => {
@@ -527,8 +532,11 @@ export default function Home() {
         mutedRef.current ||
         agentSpeakingRef.current ||
         processingAudioRef.current ||
-        audioPostInFlightRef.current
+        audioPostInFlightRef.current ||
+        callStatusRef.current === "processing" ||
+        callStatusRef.current === "speaking"
       ) {
+        clearBufferedSpeech();
         return;
       }
 
@@ -603,6 +611,7 @@ export default function Home() {
 
     processingAudioRef.current = true;
     audioPostInFlightRef.current = true;
+    callStatusRef.current = "processing";
     hasSpeechRef.current = false;
     silenceStartedAtRef.current = null;
     utteranceStartedAtRef.current = null;
@@ -643,6 +652,7 @@ export default function Home() {
       await refreshSession(data.session.id, { quiet: true });
       setPendingCaption(null);
       await playModelAudio(data.voiceEvents ?? []);
+      callStatusRef.current = data.session.state.status === "completed" ? "ended" : "listening";
       setCallStatus(data.session.state.status === "completed" ? "ended" : "listening");
       setAudioNotice(
         data.session.state.status === "completed"
@@ -650,6 +660,7 @@ export default function Home() {
           : "Listening for patient speech"
       );
     } catch (caughtError) {
+      callStatusRef.current = "listening";
       setCallStatus("listening");
       setAudioNotice("Listening for patient speech");
       setError(formatError(caughtError));
@@ -668,6 +679,7 @@ export default function Home() {
     silenceStartedAtRef.current = null;
     utteranceStartedAtRef.current = null;
     utteranceChunksRef.current = [];
+    preSpeechChunksRef.current = [];
     interruptAgentPlayback();
 
     workletNodeRef.current?.disconnect();
@@ -709,7 +721,9 @@ export default function Home() {
     let startTime = Math.max(playbackContext.currentTime, playbackContext.currentTime + 0.05);
 
     agentSpeakingRef.current = true;
+    callStatusRef.current = "speaking";
     hasSpeechRef.current = false;
+    clearBufferedSpeech();
     silenceStartedAtRef.current = null;
     setCallStatus("speaking");
     setAudioNotice("Agent speaking");
@@ -752,6 +766,14 @@ export default function Home() {
       playbackResolveRef.current = null;
       playbackSourcesRef.current = [];
     }
+  }
+
+  function clearBufferedSpeech() {
+    hasSpeechRef.current = false;
+    silenceStartedAtRef.current = null;
+    utteranceStartedAtRef.current = null;
+    preSpeechChunksRef.current = [];
+    utteranceChunksRef.current = [];
   }
 
   function interruptAgentPlayback() {
