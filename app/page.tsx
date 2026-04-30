@@ -94,6 +94,7 @@ type VoiceStatus = "idle" | "connecting" | "live" | "text-fallback" | "unavailab
 export default function Home() {
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
+  const [pendingCaption, setPendingCaption] = useState<TranscriptMessage | null>(null);
   const [refillRequest, setRefillRequest] =
     useState<TranscriptResponse["refillRequest"]>();
   const [input, setInput] = useState("");
@@ -117,6 +118,7 @@ export default function Home() {
   const hasSpeechRef = useRef(false);
   const silenceStartedAtRef = useRef<number | null>(null);
   const utteranceStartedAtRef = useRef<number | null>(null);
+  const preSpeechChunksRef = useRef<Int16Array[]>([]);
   const utteranceChunksRef = useRef<Int16Array[]>([]);
   const playbackSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const playbackResolveRef = useRef<(() => void) | null>(null);
@@ -148,8 +150,8 @@ export default function Home() {
     ? "sms"
     : "call";
   const callCaptionMessages = useMemo(
-    () => getCallCaptionMessages(messages),
-    [messages]
+    () => getCallCaptionMessages(messages, pendingCaption),
+    [messages, pendingCaption]
   );
 
   const workflowSummary = useMemo(() => {
@@ -278,8 +280,9 @@ export default function Home() {
     return navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
+        sampleRate: { ideal: 16000 },
         echoCancellation: true,
-        noiseSuppression: true,
+        noiseSuppression: false,
         autoGainControl: true
       }
     });
@@ -392,6 +395,7 @@ export default function Home() {
       window.localStorage.removeItem("refill-demo-session-id");
       setSession(null);
       setMessages([]);
+      setPendingCaption(null);
       setRefillRequest(undefined);
       setInput("");
       setSmsInput("");
@@ -405,19 +409,20 @@ export default function Home() {
 
   async function submitSms(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const text = smsInput.trim();
 
-    if (!session || !smsInput.trim()) {
+    if (!session || !text) {
       return;
     }
 
     setError(null);
+    setSmsInput("");
 
     try {
       const data = await postJson<TurnResponse>("/api/workflow/sms/reply", {
         sessionId: session.id,
-        text: smsInput.trim()
+        text
       });
-      setSmsInput("");
       setSession(data.session);
       setRefillRequest(data.refillRequest);
       await refreshSession(data.session.id, { quiet: true });
@@ -496,6 +501,7 @@ export default function Home() {
     audioPostInFlightRef.current = false;
     hasSpeechRef.current = false;
     silenceStartedAtRef.current = null;
+    preSpeechChunksRef.current = [];
 
     workletNode.port.onmessage = (event: MessageEvent<Float32Array>) => {
       if (
@@ -510,7 +516,20 @@ export default function Home() {
       const inputBuffer = event.data;
       const rms = getRms(inputBuffer);
       const now = Date.now();
-      const speechDetected = rms > (agentSpeakingRef.current ? 0.035 : 0.018);
+      const pcm = convertFloat32ToPcm16(
+        inputBuffer,
+        audioContext.sampleRate,
+        16000
+      );
+      const speechDetected = rms > (agentSpeakingRef.current ? 0.03 : 0.01);
+
+      if (pcm.length > 0 && !hasSpeechRef.current) {
+        preSpeechChunksRef.current.push(pcm);
+
+        if (preSpeechChunksRef.current.length > 12) {
+          preSpeechChunksRef.current.shift();
+        }
+      }
 
       if (speechDetected) {
         if (agentSpeakingRef.current) {
@@ -522,35 +541,34 @@ export default function Home() {
         silenceStartedAtRef.current = null;
         setCallStatus("listening");
         setAudioNotice("Listening: speech detected");
+
+        if (preSpeechChunksRef.current.length > 0) {
+          utteranceChunksRef.current.push(...preSpeechChunksRef.current);
+          preSpeechChunksRef.current = [];
+        }
       } else if (hasSpeechRef.current) {
         silenceStartedAtRef.current ??= now;
 
         if (
-          now - silenceStartedAtRef.current > 900 ||
+          now - silenceStartedAtRef.current > 1400 ||
           (utteranceStartedAtRef.current !== null &&
-            now - utteranceStartedAtRef.current > 12000)
+            now - utteranceStartedAtRef.current > 15000)
         ) {
           void finishAudioTurn();
           return;
         }
       }
 
-      if (hasSpeechRef.current) {
-        const pcm = convertFloat32ToPcm16(
-          inputBuffer,
-          audioContext.sampleRate,
-          16000
-        );
-
-        if (pcm.length > 0) {
-          utteranceChunksRef.current.push(pcm);
-        }
+      if (hasSpeechRef.current && pcm.length > 0) {
+        utteranceChunksRef.current.push(pcm);
       }
     };
 
     source.connect(workletNode);
-    // Connect to destination so the worklet stays alive
-    workletNode.connect(audioContext.destination);
+    const silentSink = audioContext.createGain();
+    silentSink.gain.value = 0;
+    workletNode.connect(silentSink);
+    silentSink.connect(audioContext.destination);
   }
 
   async function finishAudioTurn() {
@@ -572,6 +590,7 @@ export default function Home() {
     hasSpeechRef.current = false;
     silenceStartedAtRef.current = null;
     utteranceStartedAtRef.current = null;
+    preSpeechChunksRef.current = [];
     utteranceChunksRef.current = [];
     setCallStatus("processing");
     setAudioNotice("Processing speech");
@@ -596,10 +615,17 @@ export default function Home() {
       const data = await postJson<TurnResponse>("/api/workflow/call/audio/end", {
         sessionId
       });
+      const patientTranscript = getCanonicalUserTranscript(data.voiceEvents ?? []);
+
+      if (patientTranscript) {
+        setPendingCaption(createPendingCaption(patientTranscript));
+        setAudioNotice("Patient speech transcribed");
+      }
 
       setSession(data.session);
       setRefillRequest(data.refillRequest);
       await refreshSession(data.session.id, { quiet: true });
+      setPendingCaption(null);
       await playModelAudio(data.voiceEvents ?? []);
       setCallStatus(data.session.state.status === "completed" ? "ended" : "listening");
       setAudioNotice(
@@ -823,11 +849,6 @@ export default function Home() {
                 />
               </div>
 
-              <div className="sms-standby">
-                <span>SMS fallback</span>
-                <p>Text continuation stays dormant until the call disconnects before refill completion.</p>
-              </div>
-
               <details className="call-captions" open={voiceStatus !== "live"}>
                 <summary>Call captions and notes</summary>
                 <div className="caption-list">
@@ -846,27 +867,6 @@ export default function Home() {
                   <div ref={transcriptEndRef} />
                 </div>
               </details>
-
-              <form className="turn-form demo-aid-form" onSubmit={submitTurn}>
-                <label htmlFor="call-text-fallback">Demo text fallback</label>
-                <div>
-                  <input
-                    id="call-text-fallback"
-                    aria-label="Patient call input"
-                    placeholder={
-                      canSend
-                        ? "Use only if mic or voice fallback is needed..."
-                        : "Start a call to enable fallback input"
-                    }
-                    value={input}
-                    onChange={(event) => setInput(event.target.value)}
-                    disabled={!canSend}
-                  />
-                  <button type="submit" disabled={!canSend || !input.trim()}>
-                    Send
-                  </button>
-                </div>
-              </form>
 
               {error ? <p className="error-banner">{error}</p> : null}
             </div>
@@ -1168,17 +1168,41 @@ function getCallStateCopy(status: CallStatus, audioNotice: string) {
   }
 }
 
-function getCallCaptionMessages(messages: TranscriptMessage[]) {
+function getCallCaptionMessages(
+  messages: TranscriptMessage[],
+  pendingCaption: TranscriptMessage | null
+) {
   const fallbackIndex = messages.findIndex(
     (message) =>
       message.role === "system" &&
       message.content.includes("SMS fallback activated")
   );
   const callMessages = fallbackIndex >= 0 ? messages.slice(0, fallbackIndex) : messages;
+  const visibleMessages = pendingCaption
+    ? [...callMessages, pendingCaption]
+    : callMessages;
 
-  return callMessages.filter(
+  return visibleMessages.filter(
     (message) => message.role !== "tool"
   );
+}
+
+function getCanonicalUserTranscript(events: VoiceEvent[]) {
+  return events
+    .filter((event) => event.type === "user_transcript" && event.text?.trim())
+    .at(-1)
+    ?.text
+    ?.trim();
+}
+
+function createPendingCaption(content: string): TranscriptMessage {
+  return {
+    id: -Date.now(),
+    role: "user",
+    content,
+    sequence: Number.MAX_SAFE_INTEGER,
+    createdAt: new Date().toISOString()
+  };
 }
 
 function getVoiceStatusFromTranscript(
