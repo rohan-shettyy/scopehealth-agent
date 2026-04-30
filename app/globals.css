@@ -28,8 +28,8 @@ body {
 
 body {
   background:
-    radial-gradient(circle at 20% 8%, rgba(98, 246, 213, 0.22), transparent 30%),
-    radial-gradient(circle at 82% 12%, rgba(134, 108, 255, 0.25), transparent 34%),
+    radial-gradient(circle at 18% 8%, rgba(98, 246, 213, 0.14), transparent 28%),
+    radial-gradient(circle at 82% 12%, rgba(134, 108, 255, 0.14), transparent 32%),
     linear-gradient(135deg, #06111e 0%, #0b1530 48%, #10162a 100%);
   color: var(--foreground);
   font-family:
@@ -61,20 +61,6 @@ input:disabled {
   overflow: hidden;
   padding: 20px;
   position: relative;
-}
-
-.demo-shell::before {
-  animation: auroraFlow 12s ease-in-out infinite alternate;
-  background:
-    linear-gradient(90deg, rgba(98, 246, 213, 0.16), rgba(155, 120, 255, 0.14), rgba(77, 166, 255, 0.12)),
-    repeating-linear-gradient(90deg, rgba(255,255,255,0.045) 0 1px, transparent 1px 72px);
-  content: "";
-  inset: 0;
-  opacity: 0.75;
-  pointer-events: none;
-  position: absolute;
-  transform: translate3d(0, 0, 0);
-  z-index: 0;
 }
 
 .demo-shell > * {
@@ -127,7 +113,7 @@ input:disabled {
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(98, 246, 213, 0.24);
   border-radius: 999px;
-  box-shadow: 0 0 28px rgba(98, 246, 213, 0.16);
+  box-shadow: 0 0 18px rgba(98, 246, 213, 0.1);
   color: #dffef8;
   font-size: 0.84rem;
   min-height: 36px;
@@ -135,10 +121,9 @@ input:disabled {
 }
 
 .header-signal span {
-  animation: signalPulse 1.8s ease-in-out infinite;
   background: var(--accent);
   border-radius: 50%;
-  box-shadow: 0 0 16px rgba(98, 246, 213, 0.9);
+  box-shadow: 0 0 10px rgba(98, 246, 213, 0.65);
   height: 9px;
   width: 9px;
 }
@@ -160,7 +145,7 @@ input:disabled {
   border: 1px solid var(--border);
   border-radius: 18px;
   box-shadow:
-    0 24px 80px rgba(0, 0, 0, 0.32),
+    0 18px 52px rgba(0, 0, 0, 0.28),
     inset 0 1px 0 rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(18px);
   height: 100%;
@@ -181,8 +166,7 @@ input:disabled {
 
 .call-screen {
   background:
-    radial-gradient(circle at 50% 22%, rgba(98, 246, 213, 0.2), transparent 31%),
-    radial-gradient(circle at 18% 80%, rgba(136, 96, 255, 0.18), transparent 38%),
+    radial-gradient(circle at 50% 20%, rgba(98, 246, 213, 0.12), transparent 30%),
     linear-gradient(180deg, rgba(15, 28, 54, 0.98) 0%, rgba(7, 15, 30, 0.98) 100%);
   display: grid;
   gap: 12px;
@@ -210,10 +194,10 @@ input:disabled {
 
 .contact-avatar {
   align-items: center;
-  background: linear-gradient(135deg, #62f6d5, #776bff 58%, #ff7ad9);
+  background: linear-gradient(135deg, #62f6d5, #7770ff);
   border: 1px solid rgba(255, 255, 255, 0.25);
   border-radius: 50%;
-  box-shadow: 0 0 32px rgba(98, 246, 213, 0.28);
+  box-shadow: 0 0 22px rgba(98, 246, 213, 0.18);
   color: #07111f;
   display: flex;
   font-size: 1.15rem;
@@ -237,10 +221,9 @@ input:disabled {
 
 .call-state-card {
   align-self: center;
-  animation: cardGlow 6s ease-in-out infinite alternate;
   background:
-    linear-gradient(rgba(12, 24, 42, 0.88), rgba(12, 24, 42, 0.88)) padding-box,
-    linear-gradient(135deg, rgba(98, 246, 213, 0.9), rgba(131, 111, 255, 0.65), rgba(255, 122, 217, 0.55)) border-box;
+    linear-gradient(rgba(12, 24, 42, 0.9), rgba(12, 24, 42, 0.9)) padding-box,
+    linear-gradient(135deg, rgba(98, 246, 213, 0.48), rgba(131, 111, 255, 0.32)) border-box;
   border: 1px solid transparent;
   border-radius: 18px;
   display: grid;
@@ -282,13 +265,12 @@ input:disabled {
 }
 
 .voice-orb::before {
-  animation: haloSpin 4s linear infinite;
-  background: conic-gradient(from 0deg, transparent, rgba(98, 246, 213, 0.9), rgba(121, 111, 255, 0.8), transparent);
+  background: radial-gradient(circle, rgba(98, 246, 213, 0.28), transparent 62%);
   border-radius: 999px;
   content: "";
-  filter: blur(8px);
+  filter: blur(6px);
   inset: 0;
-  opacity: 0.7;
+  opacity: 0.75;
   position: absolute;
 }
 
@@ -323,7 +305,7 @@ input:disabled {
 .voice-orb-listening span,
 .voice-orb-processing span {
   animation-duration: 0.58s;
-  box-shadow: 0 0 18px rgba(98, 246, 213, 0.75);
+  box-shadow: 0 0 12px rgba(98, 246, 213, 0.55);
 }
 
 .voice-orb-speaking span {
@@ -351,12 +333,13 @@ input:disabled {
 
 .call-control-primary {
   background: linear-gradient(135deg, #62f6d5, #7770ff);
-  box-shadow: 0 0 24px rgba(98, 246, 213, 0.25);
+  box-shadow: 0 0 16px rgba(98, 246, 213, 0.16);
   color: #07111f;
 }
 
 .call-control-end {
-  background: linear-gradient(135deg, #ff6b7a, #b245ff);
+  background: rgba(255, 107, 122, 0.18);
+  border-color: rgba(255, 107, 122, 0.34);
   color: white;
 }
 
@@ -444,14 +427,15 @@ input:disabled {
 
 .sms-screen {
   background:
-    radial-gradient(circle at 85% 12%, rgba(98, 246, 213, 0.16), transparent 30%),
+    radial-gradient(circle at 85% 12%, rgba(98, 246, 213, 0.08), transparent 28%),
     linear-gradient(180deg, rgba(11, 24, 45, 0.98), rgba(8, 16, 32, 0.98));
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto 1fr auto;
+  height: 100%;
 }
 
 .mode-transition-banner {
-  background: linear-gradient(90deg, rgba(98, 246, 213, 0.16), rgba(119, 112, 255, 0.18));
+  background: rgba(98, 246, 213, 0.08);
   border-bottom: 1px solid var(--border);
   color: var(--good);
   padding: 12px 18px;
@@ -817,8 +801,6 @@ input:disabled {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin-top: 14px;
-  max-height: 280px;
   overflow-y: auto;
 }
 
@@ -832,9 +814,15 @@ input:disabled {
 .sms-bubble span {
   color: var(--muted);
   display: block;
-  font-size: 0.7rem;
-  font-weight: 700;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
   text-transform: uppercase;
+}
+
+.sms-user span {
+  color: rgba(255, 255, 255, 0.9);
 }
 
 .sms-bubble p,
@@ -848,18 +836,23 @@ input:disabled {
   color: var(--foreground);
 }
 
+.sms-assistant span {
+  color: var(--accent);
+}
+
 .sms-user {
   align-self: flex-end;
-  background: linear-gradient(135deg, rgba(98, 246, 213, 0.9), rgba(119, 112, 255, 0.85));
-  border-color: rgba(255, 255, 255, 0.24);
-  color: #07111f;
+  background: linear-gradient(135deg, rgba(68, 226, 183, 1), rgba(89, 82, 225, 1));
+  border-color: rgba(255, 255, 255, 0.3);
+  color: white;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 .sms-form {
   display: grid;
   gap: 8px;
   grid-template-columns: minmax(0, 1fr) auto;
-  margin-top: 14px;
+  padding: 16px;
 }
 
 .sms-form input {
@@ -889,47 +882,6 @@ input:disabled {
 
 .sms-form button:not(:disabled):hover {
   filter: brightness(1.08);
-}
-
-@keyframes auroraFlow {
-  0% {
-    filter: hue-rotate(0deg);
-    transform: translateX(-2%);
-  }
-
-  100% {
-    filter: hue-rotate(28deg);
-    transform: translateX(2%);
-  }
-}
-
-@keyframes signalPulse {
-  0%,
-  100% {
-    opacity: 0.58;
-    transform: scale(0.82);
-  }
-
-  50% {
-    opacity: 1;
-    transform: scale(1.15);
-  }
-}
-
-@keyframes cardGlow {
-  0% {
-    box-shadow: 0 0 28px rgba(98, 246, 213, 0.12);
-  }
-
-  100% {
-    box-shadow: 0 0 48px rgba(121, 111, 255, 0.22);
-  }
-}
-
-@keyframes haloSpin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 @keyframes pulse {
