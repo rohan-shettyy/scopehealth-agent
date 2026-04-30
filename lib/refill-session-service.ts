@@ -424,8 +424,8 @@ async function getMedicationDuplicateReply(
   }
 
   return medicationNames.length === 1
-    ? `A refill request already exists for ${medicationNames[0]}. Which other medication would you like to refill?`
-    : `Refill requests already exist for ${medicationNames.join(", ")}. Which other medication would you like to refill?`;
+    ? `A refill request already exists for ${medicationNames[0]}. Which other medication would you like to refill? You can say the number.`
+    : `Refill requests already exist for ${medicationNames.join(", ")}. Which other medication would you like to refill? You can say the number.`;
 }
 
 async function normalizeCallTranscript(value: string): Promise<string> {
@@ -591,9 +591,12 @@ async function identifyPatientForSession(
     }
   );
   const medicationList = context.activePrescriptions
-    .map((prescription) => `${prescription.medicationName} ${prescription.strength}`)
-    .join(", ");
-  const requiredReply = `Thanks, ${context.patient.fullName}. I found your profile. Which medication would you like to refill? Your active prescriptions are ${medicationList}.`;
+    .map(
+      (prescription, index) =>
+        `${index + 1}: ${prescription.medicationName} ${prescription.strength}`
+    )
+    .join(". ");
+  const requiredReply = `Thanks, ${context.patient.fullName}. I found your profile. Which medication would you like to refill? You can say the number. ${medicationList}.`;
   const voiceResult =
     expectedChannel === "call"
       ? await phraseCallReplyForGeminiState(
@@ -739,7 +742,7 @@ function getNoSpeechReprompt(state: RefillSessionState): string {
     case "identify_patient":
       return "I did not catch that. Please say your full name and date of birth.";
     case "select_medication":
-      return "I did not catch that. Which medication would you like to refill?";
+      return "I did not catch that. Which medication would you like to refill? You can say the number.";
     case "confirm_pharmacy":
       return "I did not catch that. Should I use the pharmacy on file, or a different pharmacy?";
     case "verify_insurance":

@@ -207,6 +207,7 @@ function buildGeminiWorkflowSystem(channel: GeminiChannel) {
     "Never ask for information already present in currentState.",
     "Do not skip required fields. A refill can complete only after identity, at least one medication, pharmacy, insurance, and copay are known.",
     "If the patient is evasive, off-topic, asks unrelated questions, or refuses to answer, politely restate only the current required step.",
+    "Medication options are numbered in the order activePrescriptions is provided. If patientText says a number, select only that numbered medication.",
     "If the patient asks for multiple active prescriptions, include all of them in selectedMedicationNames.",
     "Only select medication names explicitly present in patientText. Do not infer, guess, or choose a medication just because it is active.",
     "The backend derives nextExpectedStep from persisted fields. Your nextExpectedStep must match the next missing required field.",
@@ -303,6 +304,15 @@ function resolveMedications(
   context: RefillWorkflowContext,
   patientText: string
 ): MedicationChoice[] {
+  const numberedSelection = findMedicationNumbersInText(
+    patientText,
+    context.activePrescriptions
+  );
+
+  if (numberedSelection.length > 0) {
+    return dedupeMedications(numberedSelection);
+  }
+
   const explicitlyMentioned = findMedicationsInText(
     patientText,
     context.activePrescriptions
@@ -356,6 +366,40 @@ function findMedicationsInText(
   );
 
   return mentioned.length > 0 ? mentioned : direct ? [direct] : [];
+}
+
+function findMedicationNumbersInText(
+  medicationText: string,
+  options: MedicationChoice[]
+): MedicationChoice[] {
+  return extractSelectionNumbers(medicationText)
+    .map((number) => options[number - 1])
+    .filter((medication): medication is MedicationChoice => medication !== undefined);
+}
+
+function extractSelectionNumbers(value: string): number[] {
+  const normalized = normalize(value);
+  const digitNumbers = [...normalized.matchAll(/\b(?:number|option|choice)?\s*(\d+)\b/g)]
+    .map((match) => Number(match[1]));
+  const wordNumbers = [
+    ["one", 1],
+    ["first", 1],
+    ["two", 2],
+    ["second", 2],
+    ["three", 3],
+    ["third", 3],
+    ["four", 4],
+    ["fourth", 4],
+    ["five", 5],
+    ["fifth", 5]
+  ] as const;
+
+  return [
+    ...digitNumbers,
+    ...wordNumbers
+      .filter(([word]) => new RegExp(`\\b(?:number|option|choice)?\\s*${word}\\b`).test(normalized))
+      .map(([, number]) => number)
+  ].filter((number, index, numbers) => number > 0 && numbers.indexOf(number) === index);
 }
 
 function containsMedicationName(text: string, medication: MedicationChoice): boolean {
@@ -504,9 +548,7 @@ function buildStepAlignedAgentReply(
     case "identify_patient":
       return "Please say your full name and date of birth so I can find your patient profile.";
     case "select_medication":
-      return `Which medication would you like to refill? Your active prescriptions are ${context.activePrescriptions
-        .map((prescription) => `${prescription.medicationName} ${prescription.strength}`)
-        .join(", ")}.`;
+      return `Which medication would you like to refill? You can say the number. ${formatMedicationOptions(context.activePrescriptions)}.`;
     case "confirm_pharmacy":
       return `I have ${medicationSummary} selected. Should I use ${context.pharmacyOnFile.name} at ${context.pharmacyOnFile.addressLine1}, or a different pharmacy?`;
     case "verify_insurance":
@@ -516,6 +558,15 @@ function buildStepAlignedAgentReply(
     case "complete_refill":
       return `Your copay for ${medicationSummary} is ${formatCurrency(state.copayAmountCents ?? 0)}. Say yes to submit the refill request.`;
   }
+}
+
+function formatMedicationOptions(medications: MedicationChoice[]) {
+  return medications
+    .map(
+      (prescription, index) =>
+        `${index + 1}: ${prescription.medicationName} ${prescription.strength}`
+    )
+    .join(". ");
 }
 
 function getMedicationSummary(medications: MedicationChoice[]) {
