@@ -98,19 +98,19 @@ Running `npm run seed` creates or updates:
 
 ## Persistence Layer
 
-The server-side persistence helpers live in `lib/refill-persistence.ts`. They load patient identity and workflow context, create and update conversation sessions, append transcript messages, switch call sessions to SMS, end call sessions, prevent duplicate refill requests for the same prescription, create refill requests after workflow completion, and fetch a full session snapshot for UI/debug panels.
+`lib/refill-persistence.ts` contains the server-side persistence helpers. They load patient identity and workflow context, create and update conversation sessions, append transcript messages, switch call sessions to SMS, end call sessions, prevent duplicate refill requests for the same prescription, create refill requests after workflow completion, and fetch a full session snapshot for UI/debug panels.
 
 ## Workflow API
 
-The local demo exposes JSON-only route handlers for simulated call and SMS flows. These endpoints do not connect to real speech, telephony, or SMS providers.
+The local demo exposes route handlers for simulated call and SMS workflow.
 
-Call-mode replies go through the server-owned voice provider boundary in `lib/voice`. When Gemini Live is enabled, the backend opens a Gemini Live WebSocket session and can surface transcription, model text, model audio, and tool-call events on call input responses as `voiceEvents`. Gemini drives the workflow proposal and response text. SMS responses use the configured Gemini text model, defaulting to `gemini-3.1-flash-lite-preview`.
+Call-mode replies go through the server-owned voice provider boundary in `lib/voice`. When Gemini Live is enabled, the backend opens a Gemini Live WebSocket session enables transcription, model text, model audio, and tool-call events on call input responses as `voiceEvents`. Gemini drives the workflow proposal and response text. SMS responses use the configured Gemini text model, defaulting to `gemini-3.1-flash-lite-preview`.
 
-For browser voice simulation, the call panel captures microphone audio, converts it to raw little-endian PCM16 mono at 16kHz, and streams chunks to the backend as `audio/pcm;rate=16000`. Gemini Live audio output is expected as PCM audio and is played in the browser at the MIME type's declared sample rate, usually 24kHz.
+For browser voice simulation, the call panel captures microphone audio and streams chunks to the backend as `audio/pcm;rate=16000`. Gemini Live audio output is expected as PCM audio and is played in the browser.
 
 - `POST /api/workflow/call/start`
   - Body: none
-  - Response: `{ session, messages, refillRequest? }`
+  - Response: `{ session, messages, refillRequest?, voiceEvents? }`
 - `POST /api/workflow/call/input`
   - Body: `{ "sessionId": number, "text": string }`
   - Response: `{ session, agentReply, isComplete, refillRequest?, voiceEvents? }`
@@ -125,6 +125,9 @@ For browser voice simulation, the call panel captures microphone audio, converts
 - `POST /api/workflow/call/hangup`
   - Body: `{ "sessionId": number }`
   - Response: `{ session, messages, refillRequest? }`
+- `POST /api/workflow/call/reset`
+  - Body: `{ "sessionId": number }`
+  - Response: `{ reset: true }`
 - `POST /api/workflow/sms/fallback`
   - Body: `{ "sessionId": number }`
   - Response: `{ session, messages, refillRequest? }`
