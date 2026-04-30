@@ -225,9 +225,13 @@ function bindSocketEvents(connection: LiveConnection) {
       })
     );
   });
-  connection.socket.addEventListener("close", () => {
+  connection.socket.addEventListener("close", (event) => {
     connection.events.push(
-      createEvent(connection.session.sessionId, "session_closed")
+      createEvent(connection.session.sessionId, "session_closed", {
+        text: event.reason
+          ? `Gemini Live WebSocket closed: ${event.code} ${event.reason}`
+          : `Gemini Live WebSocket closed: ${event.code}`
+      })
     );
   });
 }
@@ -252,9 +256,7 @@ function sendSetup(connection: LiveConnection, systemInstruction: string) {
         systemInstruction: {
           parts: [{ text: systemInstruction }]
         },
-        inputAudioTranscription: {
-          languageCode: "en-US"
-        },
+        inputAudioTranscription: {},
         outputAudioTranscription: {}
       }
     })
@@ -503,6 +505,12 @@ function waitForEvent(
         if (event.type === "error") {
           clearInterval(interval);
           reject(new Error(event.text ?? "Gemini Live returned an error"));
+          return;
+        }
+
+        if (event.type === "session_closed") {
+          clearInterval(interval);
+          reject(new Error(event.text ?? "Gemini Live WebSocket closed"));
           return;
         }
 
