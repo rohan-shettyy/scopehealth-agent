@@ -157,6 +157,27 @@ export async function loadCallTranscriptionVocabulary(): Promise<string[]> {
   ].filter((value, index, values) => values.indexOf(value) === index);
 }
 
+export async function loadCallTranscriptCorrectionTerms(): Promise<string[]> {
+  const [patients, prescriptions] = await Promise.all([
+    prisma.patient.findMany({
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }]
+    }),
+    prisma.prescription.findMany({
+      where: { status: "ACTIVE" },
+      orderBy: { medicationName: "asc" }
+    })
+  ]);
+
+  return [
+    ...patients.flatMap((patient) => [
+      patient.firstName,
+      patient.lastName,
+      `${patient.firstName} ${patient.lastName}`
+    ]),
+    ...prescriptions.map((prescription) => prescription.medicationName)
+  ].filter((value, index, values) => values.indexOf(value) === index);
+}
+
 function spellForSpeech(value: string): string {
   return value
     .replace(/[^a-zA-Z]/g, "")

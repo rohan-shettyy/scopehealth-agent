@@ -14,6 +14,7 @@ import {
   endCallSession,
   fetchSessionTranscript,
   loadAllPatientIdentitySummaries,
+  loadCallTranscriptCorrectionTerms,
   loadCallTranscriptionVocabulary,
   loadPatientWorkflowContextById,
   switchSessionToSms,
@@ -116,9 +117,9 @@ export async function finishCallAudioTurn(
   sessionId: number
 ): Promise<WorkflowInteractionResult> {
   const audioResult = await getCallVoiceProvider().endAudioTurn(sessionId);
-  const transcriptText = normalizeReadableTranscript(
+  const transcriptText = await normalizeCallTranscript(
     audioResult.transcriptText?.trim() ?? ""
-  ).trim();
+  );
 
   if (!transcriptText) {
     await persistVoiceEvents(sessionId, audioResult.events);
@@ -341,13 +342,6 @@ async function submitWorkflowInput(
           )
       : { replyText: result.agentReply, events: [] };
 
-  await appendConversationMessage({
-    sessionId,
-    role: "assistant",
-    content: voiceResult.replyText
-  });
-  await persistVoiceEvents(sessionId, voiceResult.events);
-
   const completion = result.shouldCreateRefillRequest
     ? await createRefillRequestWithDuplicateDenial(
         sessionId,
@@ -355,6 +349,23 @@ async function submitWorkflowInput(
         context
       )
     : { voiceEvents: [] };
+
+  if (completion.denialReply) {
+    return {
+      session: (await fetchSessionTranscript(sessionId)).session,
+      agentReply: completion.denialReply,
+      isComplete: false,
+      refillRequest: completion.refillRequest,
+      voiceEvents: completion.voiceEvents
+    };
+  }
+
+  await appendConversationMessage({
+    sessionId,
+    role: "assistant",
+    content: voiceResult.replyText
+  });
+  await persistVoiceEvents(sessionId, voiceResult.events);
 
   const finalVoiceEvents = [...voiceResult.events, ...(completion.voiceEvents ?? [])];
 
@@ -367,6 +378,110 @@ async function submitWorkflowInput(
     refillRequest: completion.refillRequest,
     voiceEvents: finalVoiceEvents
   };
+}
+
+async function normalizeCallTranscript(value: string): Promise<string> {
+  const readable = normalizeReadableTranscript(value).trim();
+
+  if (!readable) {
+    return "";
+  }
+
+  return correctKnownTranscriptTerms(
+    readable,
+    await loadCallTranscriptCorrectionTerms()
+  );
+}
+
+function correctKnownTranscriptTerms(value: string, terms: string[]): string {
+  return terms.reduce(
+    (current, term) => replaceCloseTranscriptTerm(current, term),
+    value
+  );
+}
+
+function replaceCloseTranscriptTerm(value: string, term: string): string {
+  const termTokens = splitWords(term);
+  const words = [...value.matchAll(/[A-Za-z]+(?:'[A-Za-z]+)?/g)];
+  let result = value;
+  let offset = 0;
+
+  for (let index = 0; index < words.length; index += 1) {
+    const maxWindow = Math.min(words.length - index, termTokens.length + 2);
+
+    for (let size = maxWindow; size >= 1; size -= 1) {
+      const window = words.slice(index, index + size);
+      const candidate = window.map((match) => match[0]).join(" ");
+
+      if (!isCloseTranscriptTerm(candidate, term)) {
+        continue;
+      }
+
+      const start = (window[0].index ?? 0) + offset;
+      const last = window[window.length - 1];
+      const end = (last.index ?? 0) + last[0].length + offset;
+      result = `${result.slice(0, start)}${term}${result.slice(end)}`;
+      offset += term.length - (end - start);
+      index += size - 1;
+      break;
+    }
+  }
+
+  return result;
+}
+
+function isCloseTranscriptTerm(candidate: string, term: string): boolean {
+  const normalizedCandidate = normalizeLetters(candidate);
+  const normalizedTerm = normalizeLetters(term);
+
+  if (!normalizedCandidate || !normalizedTerm) {
+    return false;
+  }
+
+  if (
+    normalizedCandidate === normalizedTerm ||
+    normalizedCandidate.includes(normalizedTerm) ||
+    normalizedTerm.includes(normalizedCandidate)
+  ) {
+    return normalizedCandidate.length >= Math.min(normalizedTerm.length, 4);
+  }
+
+  const distance = levenshteinDistance(normalizedCandidate, normalizedTerm);
+  const similarity =
+    1 - distance / Math.max(normalizedCandidate.length, normalizedTerm.length);
+  const threshold = normalizedTerm.length >= 10 ? 0.74 : 0.82;
+
+  return similarity >= threshold;
+}
+
+function splitWords(value: string): string[] {
+  return value.match(/[A-Za-z]+/g) ?? [];
+}
+
+function normalizeLetters(value: string): string {
+  return value.toLowerCase().replace(/[^a-z]/g, "");
+}
+
+function levenshteinDistance(left: string, right: string): number {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  const current = Array<number>(right.length + 1);
+
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    current[0] = leftIndex;
+
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      current[rightIndex] = Math.min(
+        current[rightIndex - 1] + 1,
+        previous[rightIndex] + 1,
+        previous[rightIndex - 1] +
+          (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1)
+      );
+    }
+
+    previous.splice(0, previous.length, ...current);
+  }
+
+  return previous[right.length];
 }
 
 async function identifyPatientForSession(
