@@ -4,6 +4,8 @@ export function buildCallSystemInstruction(vocabulary: string[] = []) {
       ? [
           "Treat this vocabulary as high-priority English speech recognition context.",
           "Patient names and prescription medication names are legitimate words and should not be translated, localized, or rewritten.",
+          "When the audio is close to one of these names or medications, prefer the exact spelling shown here in the transcript.",
+          "Keep identity verification strict; this vocabulary only improves transcription spelling and does not authorize a patient match by itself.",
           `Vocabulary: ${vocabulary.join(", ")}.`
         ].join(" ")
       : undefined;

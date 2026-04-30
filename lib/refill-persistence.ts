@@ -146,13 +146,23 @@ export async function loadCallTranscriptionVocabulary(): Promise<string[]> {
     ...patients.flatMap((patient) => [
       patient.firstName,
       patient.lastName,
-      `${patient.firstName} ${patient.lastName}`
+      `${patient.firstName} ${patient.lastName}`,
+      `${patient.firstName} ${patient.lastName}, spelled ${spellForSpeech(patient.firstName)} ${spellForSpeech(patient.lastName)}`
     ]),
     ...prescriptions.flatMap((prescription) => [
       prescription.medicationName,
-      `${prescription.medicationName} ${prescription.strength}`
+      `${prescription.medicationName} ${prescription.strength}`,
+      `${prescription.medicationName}, spelled ${spellForSpeech(prescription.medicationName)}`
     ])
   ].filter((value, index, values) => values.indexOf(value) === index);
+}
+
+function spellForSpeech(value: string): string {
+  return value
+    .replace(/[^a-zA-Z]/g, "")
+    .toUpperCase()
+    .split("")
+    .join(" ");
 }
 
 export async function loadPatientWorkflowContextById(
