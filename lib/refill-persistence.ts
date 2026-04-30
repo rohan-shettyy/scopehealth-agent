@@ -488,6 +488,45 @@ export async function createRefillRequestFromSession(
   return toRefillRequestSnapshot(refillRequest);
 }
 
+export async function findDuplicateRefillMedicationNamesForSession(
+  sessionId: number
+): Promise<string[]> {
+  const session = await prisma.conversationSession.findUniqueOrThrow({
+    where: { id: sessionId }
+  });
+
+  if (!session.patientId || session.refillRequestId) {
+    return [];
+  }
+
+  return findDuplicateMedicationNames(prisma, {
+    ...session,
+    patientId: session.patientId
+  });
+}
+
+export async function resetSessionAfterDuplicateMedication(
+  sessionId: number
+): Promise<ConversationSessionSnapshot> {
+  const session = await prisma.conversationSession.update({
+    where: { id: sessionId },
+    data: {
+      selectedMedication: { disconnect: true },
+      selectedMedicationsJson: null,
+      selectedPharmacy: { disconnect: true },
+      alternatePharmacy: null,
+      insuranceVerified: false,
+      copayAmountCents: null,
+      lastCompletedStep: "identify_patient",
+      nextExpectedStep: "select_medication",
+      status: "ACTIVE"
+    },
+    include: sessionSelections
+  });
+
+  return toSessionSnapshot(session);
+}
+
 export async function fetchSessionTranscript(
   sessionId: number
 ): Promise<SessionTranscript> {
@@ -743,15 +782,27 @@ async function assertNoDuplicateRefillRequests(
   tx: Prisma.TransactionClient,
   session: ConversationSession & { patientId: number }
 ) {
+  const medicationNames = await findDuplicateMedicationNames(tx, session);
+
+  if (medicationNames.length > 0) {
+    throw new DuplicateRefillRequestError(medicationNames);
+  }
+}
+
+async function findDuplicateMedicationNames(
+  tx: Prisma.TransactionClient,
+  session: ConversationSession & { patientId: number }
+): Promise<string[]> {
   const requestedIds = getSessionPrescriptionIds(session);
 
   if (requestedIds.length === 0) {
-    return;
+    return [];
   }
 
   const existingRequests = await tx.refillRequest.findMany({
     where: {
       patientId: session.patientId,
+      id: session.refillRequestId ? { not: session.refillRequestId } : undefined,
       status: { in: ["IN_PROGRESS", "SUBMITTED", "COMPLETED"] }
     }
   });
@@ -772,7 +823,7 @@ async function assertNoDuplicateRefillRequests(
   }
 
   if (duplicateIds.size === 0) {
-    return;
+    return [];
   }
 
   const prescriptions = await tx.prescription.findMany({
@@ -780,9 +831,7 @@ async function assertNoDuplicateRefillRequests(
     orderBy: { medicationName: "asc" }
   });
 
-  throw new DuplicateRefillRequestError(
-    prescriptions.map((prescription) => prescription.medicationName)
-  );
+  return prescriptions.map((prescription) => prescription.medicationName);
 }
 
 function getSessionPrescriptionIds(session: ConversationSession): number[] {

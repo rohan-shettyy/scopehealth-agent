@@ -108,9 +108,7 @@ async function main() {
     }
   });
 
-  await prisma.refillRequest.deleteMany({
-    where: { status: "DRAFT" }
-  });
+  await resetDemoWorkflowState();
 
   await prisma.pharmacy.upsert({
     where: {
@@ -129,6 +127,12 @@ async function main() {
   for (const seedPatient of seedPatients) {
     await seedPatientProfile(seedPatient);
   }
+}
+
+async function resetDemoWorkflowState() {
+  await prisma.conversationMessage.deleteMany();
+  await prisma.conversationSession.deleteMany();
+  await prisma.refillRequest.deleteMany();
 }
 
 async function seedPatientProfile(seedPatient: SeedPatient) {

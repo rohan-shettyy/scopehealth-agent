@@ -13,10 +13,12 @@ import {
   createRefillRequestFromSession,
   endCallSession,
   fetchSessionTranscript,
+  findDuplicateRefillMedicationNamesForSession,
   loadAllPatientIdentitySummaries,
   loadCallTranscriptCorrectionTerms,
   loadCallTranscriptionVocabulary,
   loadPatientWorkflowContextById,
+  resetSessionAfterDuplicateMedication,
   switchSessionToSms,
   updateConversationSessionState,
   type ConversationSessionSnapshot,
@@ -325,6 +327,37 @@ async function submitWorkflowInput(
     sessionId,
     firstResult.updatedSession
   );
+  const earlyDuplicateReply = await getMedicationDuplicateReply(sessionId);
+
+  if (earlyDuplicateReply) {
+    await resetSessionAfterDuplicateMedication(sessionId);
+
+    const voiceResult =
+      expectedChannel === "call"
+        ? await phraseCallReplyForGeminiState(
+            sessionId,
+            text,
+            earlyDuplicateReply,
+            (await fetchSessionTranscript(sessionId)).session.state,
+            context
+          )
+        : { replyText: earlyDuplicateReply, events: [] };
+
+    await appendConversationMessage({
+      sessionId,
+      role: "assistant",
+      content: voiceResult.replyText
+    });
+    await persistVoiceEvents(sessionId, voiceResult.events);
+
+    return {
+      session: (await fetchSessionTranscript(sessionId)).session,
+      agentReply: voiceResult.replyText,
+      isComplete: false,
+      voiceEvents: voiceResult.events
+    };
+  }
+
   const result = {
     session: firstSession,
     agentReply: firstResult.agentReply,
@@ -378,6 +411,21 @@ async function submitWorkflowInput(
     refillRequest: completion.refillRequest,
     voiceEvents: finalVoiceEvents
   };
+}
+
+async function getMedicationDuplicateReply(
+  sessionId: number
+): Promise<string | undefined> {
+  const medicationNames =
+    await findDuplicateRefillMedicationNamesForSession(sessionId);
+
+  if (medicationNames.length === 0) {
+    return undefined;
+  }
+
+  return medicationNames.length === 1
+    ? `A refill request already exists for ${medicationNames[0]}. Which other medication would you like to refill?`
+    : `Refill requests already exist for ${medicationNames.join(", ")}. Which other medication would you like to refill?`;
 }
 
 async function normalizeCallTranscript(value: string): Promise<string> {
@@ -598,7 +646,7 @@ async function createRefillRequestWithDuplicateDenial(
     }
 
     const denialReply = error.message;
-    await updateConversationSessionState(sessionId, { status: "active" });
+    await resetSessionAfterDuplicateMedication(sessionId);
     const voiceResult =
       expectedChannel === "call"
         ? await phraseCallReplyForGeminiState(
