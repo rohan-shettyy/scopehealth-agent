@@ -160,11 +160,7 @@ export class GeminiLiveClient implements VoiceProvider {
     await waitForAudioTranscriptionOrTimeout(connection, eventStart);
 
     const events = connection.events.slice(eventStart);
-    const transcriptText = events
-      .filter((event) => event.type === "user_transcript" && event.text)
-      .map((event) => event.text)
-      .join(" ")
-      .trim();
+    const transcriptText = getLatestUserTranscript(events);
 
     connection.acceptingAudio = true;
 
@@ -201,6 +197,14 @@ export class GeminiLiveClient implements VoiceProvider {
   }
 }
 
+function getLatestUserTranscript(events: VoiceLiveEvent[]) {
+  return events
+    .filter((event) => event.type === "user_transcript" && event.text?.trim())
+    .at(-1)
+    ?.text
+    ?.trim();
+}
+
 function bindSocketEvents(connection: LiveConnection) {
   connection.socket.addEventListener("message", async (message) => {
     connection.events.push(
@@ -233,6 +237,7 @@ function sendSetup(connection: LiveConnection, systemInstruction: string) {
           responseModalities: ["AUDIO"],
           temperature: 0.4,
           speechConfig: {
+            languageCode: "en-US",
             voiceConfig: {
               prebuiltVoiceConfig: {
                 voiceName: "Aoede"

@@ -117,7 +117,7 @@ export async function finishCallAudioTurn(
 
   if (!transcriptText) {
     await persistVoiceEvents(sessionId, audioResult.events);
-    throw new Error("No speech transcription was returned for this audio turn");
+    return repromptAfterNoSpeech(sessionId, audioResult.events);
   }
 
   const workflowResult = await submitCallInput(sessionId, transcriptText);
@@ -125,9 +125,51 @@ export async function finishCallAudioTurn(
   return {
     ...workflowResult,
     voiceEvents: [
-      ...getPatientAudioTranscriptEvents(audioResult.events),
+      ...getCanonicalPatientAudioTranscriptEvents(audioResult.events, transcriptText),
       ...(workflowResult.voiceEvents ?? [])
     ]
+  };
+}
+
+async function repromptAfterNoSpeech(
+  sessionId: number,
+  audioEvents: VoiceLiveEvent[]
+): Promise<WorkflowInteractionResult> {
+  const transcript = await fetchSessionTranscript(sessionId);
+  const context = await loadDemoPatientWorkflowContext();
+  const reprompt = getNoSpeechReprompt(transcript.session.state);
+  const voiceResult = await phraseCallReply(
+    sessionId,
+    "No clear patient speech was transcribed.",
+    reprompt,
+    [
+      "The patient did not produce clear transcribable speech.",
+      "Do not advance the refill workflow.",
+      "Briefly re-prompt for the current missing information.",
+      `Current workflow state: ${JSON.stringify(transcript.session.state)}`,
+      `Patient: ${context.patient.fullName}`,
+      `Available medications: ${context.activePrescriptions
+        .map((prescription) => `${prescription.medicationName} ${prescription.strength}`)
+        .join(", ")}`,
+      `Pharmacy on file: ${context.pharmacyOnFile.name}, ${context.pharmacyOnFile.addressLine1}`,
+      `Insurance: ${context.insurancePolicy.payerName} ${context.insurancePolicy.planName}`,
+      `Required reply meaning: ${reprompt}`
+    ].join("\n")
+  );
+
+  await appendConversationMessage({
+    sessionId,
+    role: "assistant",
+    content: voiceResult.replyText
+  });
+  await persistVoiceEvents(sessionId, voiceResult.events);
+
+  return {
+    session: transcript.session,
+    agentReply: voiceResult.replyText,
+    isComplete: false,
+    refillRequest: transcript.refillRequest,
+    voiceEvents: [...audioEvents, ...voiceResult.events]
   };
 }
 
@@ -362,6 +404,23 @@ function getNextMissingStep(state: RefillSessionState): WorkflowStep {
   return "complete_refill";
 }
 
+function getNoSpeechReprompt(state: RefillSessionState): string {
+  switch (getNextMissingStep(state)) {
+    case "verify_dob":
+      return "I did not catch that. Please say Sarah Chen's date of birth.";
+    case "select_medication":
+      return "I did not catch that. Which medication would you like to refill?";
+    case "confirm_pharmacy":
+      return "I did not catch that. Should I use the pharmacy on file, or a different pharmacy?";
+    case "verify_insurance":
+      return "I did not catch that. Is your insurance still current?";
+    case "notify_copay":
+      return "I did not catch that. I can share the copay and continue when you are ready.";
+    case "complete_refill":
+      return "I did not catch that. Please say yes when you are ready to finish the refill request.";
+  }
+}
+
 function hasMessage(transcript: SessionTranscript, content: string): boolean {
   return transcript.messages.some((message) => message.content === content);
 }
@@ -486,17 +545,26 @@ function formatVoiceEventError(event: VoiceLiveEvent): string {
   return "Unknown voice provider error";
 }
 
-function getPatientAudioTranscriptEvents(events: VoiceLiveEvent[]) {
-  return events
-    .filter((event) => event.type === "user_transcript" || event.type === "error")
-    .map((event) =>
-      event.type === "user_transcript" && event.text
-        ? {
-            ...event,
-            text: normalizeReadableTranscript(event.text)
+function getCanonicalPatientAudioTranscriptEvents(
+  events: VoiceLiveEvent[],
+  transcriptText: string
+) {
+  const userTranscriptEvent = events.findLast(
+    (event) => event.type === "user_transcript"
+  );
+  const errorEvents = events.filter((event) => event.type === "error");
+
+  return [
+    ...(userTranscriptEvent
+      ? [
+          {
+            ...userTranscriptEvent,
+            text: transcriptText
           }
-        : event
-    );
+        ]
+      : []),
+    ...errorEvents
+  ];
 }
 
 function formatError(error: unknown): string {
