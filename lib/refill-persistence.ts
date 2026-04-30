@@ -132,13 +132,20 @@ export async function loadAllPatientIdentitySummaries(): Promise<PatientSummary[
 }
 
 export async function loadCallTranscriptionVocabulary(): Promise<string[]> {
-  const [patients, prescriptions] = await Promise.all([
+  const [patients, prescriptions, insurancePolicies, pharmacies] = await Promise.all([
     prisma.patient.findMany({
       orderBy: [{ lastName: "asc" }, { firstName: "asc" }]
     }),
     prisma.prescription.findMany({
       where: { status: "ACTIVE" },
       orderBy: { medicationName: "asc" }
+    }),
+    prisma.insurancePolicy.findMany({
+      where: { active: true },
+      orderBy: [{ payerName: "asc" }, { planName: "asc" }]
+    }),
+    prisma.pharmacy.findMany({
+      orderBy: [{ name: "asc" }, { addressLine1: "asc" }]
     })
   ]);
 
@@ -155,18 +162,38 @@ export async function loadCallTranscriptionVocabulary(): Promise<string[]> {
       `${prescription.medicationName} ${prescription.strength}`,
       `${prescription.medicationName}, spelled ${spellForSpeech(prescription.medicationName)}`,
       `${prescription.medicationName}, pronounced ${spaceSyllables(prescription.medicationName)}`
+    ]),
+    ...insurancePolicies.flatMap((policy) => [
+      policy.payerName,
+      policy.planName,
+      `${policy.payerName} ${policy.planName}`,
+      `${policy.payerName}, spelled ${spellForSpeech(policy.payerName)}`,
+      `${policy.planName}, spelled ${spellForSpeech(policy.planName)}`
+    ]),
+    ...pharmacies.flatMap((pharmacy) => [
+      pharmacy.name,
+      pharmacy.addressLine1,
+      `${pharmacy.name} ${pharmacy.addressLine1}`,
+      `${pharmacy.name}, spelled ${spellForSpeech(pharmacy.name)}`
     ])
   ].filter((value, index, values) => values.indexOf(value) === index);
 }
 
 export async function loadCallTranscriptCorrectionTerms(): Promise<string[]> {
-  const [patients, prescriptions] = await Promise.all([
+  const [patients, prescriptions, insurancePolicies, pharmacies] = await Promise.all([
     prisma.patient.findMany({
       orderBy: [{ lastName: "asc" }, { firstName: "asc" }]
     }),
     prisma.prescription.findMany({
       where: { status: "ACTIVE" },
       orderBy: { medicationName: "asc" }
+    }),
+    prisma.insurancePolicy.findMany({
+      where: { active: true },
+      orderBy: [{ payerName: "asc" }, { planName: "asc" }]
+    }),
+    prisma.pharmacy.findMany({
+      orderBy: [{ name: "asc" }, { addressLine1: "asc" }]
     })
   ]);
 
@@ -176,7 +203,17 @@ export async function loadCallTranscriptCorrectionTerms(): Promise<string[]> {
       patient.lastName,
       `${patient.firstName} ${patient.lastName}`
     ]),
-    ...prescriptions.map((prescription) => prescription.medicationName)
+    ...prescriptions.map((prescription) => prescription.medicationName),
+    ...insurancePolicies.flatMap((policy) => [
+      policy.payerName,
+      policy.planName,
+      `${policy.payerName} ${policy.planName}`
+    ]),
+    ...pharmacies.flatMap((pharmacy) => [
+      pharmacy.name,
+      pharmacy.addressLine1,
+      `${pharmacy.name} ${pharmacy.addressLine1}`
+    ])
   ].filter((value, index, values) => values.indexOf(value) === index);
 }
 
